@@ -451,7 +451,7 @@ export class GameEngine {
     this.activeTreeId = treeId;
 
     // Auto-select smart tool for newly clicked tree
-    if (found.stage === 'fallen' && this.currentContract?.unlockedTools.includes('buck')) {
+    if (found.stage === 'fallen' && this.treeRequiresBuck(found)) {
       this.activeTool = 'buck';
     } else if (found.spec.task === 'prune_only' || (found.spec.task === 'prune_and_fell' && found.prunedTargetCount < found.spec.hazardBranches)) {
       this.activeTool = 'prune';
@@ -1271,6 +1271,11 @@ export class GameEngine {
     });
   }
 
+  /** Limb & Buck is part of this tree's job, and the contract actually unlocks the tool. */
+  private treeRequiresBuck(tree: TreeRuntime): boolean {
+    return Boolean(tree.spec.requireBucking) && (this.currentContract?.unlockedTools.includes('buck') ?? false);
+  }
+
   private getFallenObstructingLimbs(tree: TreeRuntime): BranchData[] {
     if (tree.stage !== 'fallen') return [];
     const seen = new Set<string>();
@@ -1299,6 +1304,7 @@ export class GameEngine {
         // Click & hover right through foreground trees that are ghosted out of the way
         if (t.spec.id !== this.activeTreeId && t.occlusionFade < 0.55) continue;
         const isFallen = t.stage === 'fallen';
+        if (isFallen && !this.treeRequiresBuck(t)) continue;
         for (const b of t.branches) {
           if (b.pruned) continue;
           if (!isFallen && b.groundLimbOnly) continue;
@@ -1352,7 +1358,7 @@ export class GameEngine {
       const clearRings: THREE.Object3D[] = [];
       const fallenBranchColliders: THREE.Object3D[] = [];
       for (const t of this.trees) {
-        if (t.stage !== 'fallen') continue;
+        if (t.stage !== 'fallen' || !this.treeRequiresBuck(t)) continue;
         for (const r of t.buckRings) {
           if (!r.cutDone && this.getObstructingLimbsForRing(t, r).length === 0) {
             clearRings.push(r.ringMesh);
@@ -1534,7 +1540,7 @@ export class GameEngine {
       // Directly hovered fallen branch/crown bough -> zip it off to limb the log!
       if (this.hoveredBranch && !this.hoveredBranch.pruned) {
         const branchTree = this.trees.find((t) => t.spec.id === this.hoveredBranch?.treeId);
-        if (branchTree?.stage === 'fallen') {
+        if (branchTree?.stage === 'fallen' && this.treeRequiresBuck(branchTree)) {
           this.cuttingBranch = this.hoveredBranch;
           if (branchTree.spec.id !== this.activeTreeId) {
             this.activeTreeId = branchTree.spec.id;
@@ -1548,7 +1554,7 @@ export class GameEngine {
       // Forgiving proximity check near any uncut bucking ring:
       // if clear -> buck it; if buried under crown limbs -> auto-limb the nearest covering bough!
       for (const t of this.trees) {
-        if (t.stage !== 'fallen') continue;
+        if (t.stage !== 'fallen' || !this.treeRequiresBuck(t)) continue;
         for (const r of t.buckRings) {
           if (r.cutDone) continue;
           const worldP = new THREE.Vector3();
@@ -1905,7 +1911,7 @@ export class GameEngine {
       tree.landedInDropZone = hitHazards.length === 0;
     }
 
-    const showBuckRings = Boolean(tree.spec.requireBucking) && contract.unlockedTools.includes('buck');
+    const showBuckRings = this.treeRequiresBuck(tree);
     for (const r of tree.buckRings) {
       r.ringMesh.visible = showBuckRings;
     }
@@ -2714,7 +2720,11 @@ export class GameEngine {
           // Hide collar rings on branches riding on already-detached rolled log segments
           const onDetachedLog = b.meshGroup.parent?.parent !== tree.trunkPivot;
           const blocksBuck = obstructingSet?.has(b.id) ?? false;
-          if (!onDetachedLog && (this.activeTool === 'buck' || this.activeTool === 'prune')) {
+          if (
+            !onDetachedLog &&
+            this.treeRequiresBuck(tree) &&
+            (this.activeTool === 'buck' || this.activeTool === 'prune')
+          ) {
             if (isHov) {
               rMat.color.set('#86efac');
               rMat.opacity = 0.98;
@@ -3024,7 +3034,7 @@ export class GameEngine {
         if (nextTopCut) {
           promptText = `Hold Left-Click on the golden ring up the trunk to piece down (${Math.round(tree.currentHeight)}m · ${remTops} round${remTops === 1 ? '' : 's'} left)!`;
           subPromptText = 'Shorten the spar until the red aim shadow clears the shed and turns green';
-        } else if (tree.stage === 'fallen') {
+        } else if (tree.stage === 'fallen' && this.treeRequiresBuck(tree)) {
           const blockers = this.getFallenObstructingLimbs(tree);
           if (blockers.length > 0) {
             promptText =
@@ -3033,6 +3043,8 @@ export class GameEngine {
           } else {
             promptText = 'Hover a golden ring on the fallen trunk & hold Left-Click to buck sawlogs!';
           }
+        } else if (tree.stage === 'fallen' || tree.stage === 'bucked') {
+          promptText = 'This stem does not need Limb & Buck. Select the next standing tree.';
         } else {
           promptText = 'Fell a tree first before limbing & bucking logs.';
         }
