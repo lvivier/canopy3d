@@ -37,6 +37,7 @@ body,
   width: 100%;
   height: 100%;
   display: block;
+  touch-action: none;
 }
 
 #ui-root {
@@ -129,6 +130,7 @@ body,
   background: radial-gradient(circle at 50% 45%, rgba(12, 24, 18, 0.14), rgba(8, 16, 12, 0.46));
   backdrop-filter: blur(2px);
   overflow-y: auto;
+  touch-action: pan-y;
 }
 
 .eyebrow {
@@ -222,6 +224,10 @@ body,
 
 .controls-legend b {
   color: var(--text-main);
+}
+
+.hint-touch {
+  display: none;
 }
 
 /* Contracts & Sandbox Shell */
@@ -473,10 +479,80 @@ body,
   max-width: 310px;
 }
 
+.contract-hud-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
 .hud-contract-title {
   font-family: var(--font-display);
   font-size: 1.05rem;
   font-weight: 700;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.objectives-toggle {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8f5ec;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+
+.objectives-toggle .objectives-chevron {
+  font-size: 0.65rem;
+  opacity: 0.85;
+  transition: transform 0.16s ease;
+}
+
+.contract-hud-card.objectives-expanded .objectives-toggle .objectives-chevron {
+  transform: rotate(180deg);
+}
+
+.objective-chip-mobile {
+  display: none;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 2px;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  color: #e4efe7;
+  line-height: 1.35;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.objective-chip-mobile .obj-check {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.objective-chip-mobile .obj-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.objective-chip-mobile:active {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .hud-contract-sub {
@@ -592,6 +668,55 @@ body,
   background: rgba(52, 211, 153, 0.2);
 }
 
+.icon-btn.active {
+  background: rgba(52, 211, 153, 0.24);
+  border-color: rgba(110, 231, 183, 0.45);
+}
+
+.hud-menu-wrap {
+  position: relative;
+}
+
+.hud-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 168px;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-glass);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hud-menu-popover[hidden] {
+  display: none;
+}
+
+.hud-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hud-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .species-hud-card {
   width: 270px;
 }
@@ -675,20 +800,28 @@ body,
 /* Toast Notification */
 .hud-toast {
   position: fixed;
-  top: 20px;
+  top: max(14px, env(safe-area-inset-top, 0px));
   left: 50%;
   transform: translateX(-50%) translateY(-16px);
+  width: max-content;
+  max-width: min(520px, calc(100vw - 28px));
+  box-sizing: border-box;
   background: var(--bg-glass-strong);
   backdrop-filter: blur(14px);
   border: 1px solid var(--border-glass);
-  padding: 10px 20px;
-  border-radius: 999px;
+  padding: 10px 16px;
+  border-radius: 14px;
   font-size: 0.88rem;
   font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  text-wrap: balance;
   opacity: 0;
   transition: opacity 0.22s ease, transform 0.22s ease;
-  white-space: nowrap;
+  white-space: normal;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 25;
 }
 
 .hud-toast.visible {
@@ -1093,14 +1226,161 @@ body,
   margin-top: 20px;
 }
 
+@media (max-width: 520px), ((hover: none) and (pointer: coarse)) {
+  .title-screen .species-strip {
+    display: none;
+  }
+
+  .title-screen .title-card {
+    padding: 28px 22px;
+  }
+
+  .title-screen .title-actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .title-screen .title-actions .btn {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .title-screen .controls-legend {
+    flex-direction: column;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .title-screen .hint-pointer {
+    display: none;
+  }
+
+  .title-screen .hint-touch {
+    display: inline;
+  }
+}
+
 @media (max-width: 760px) {
   .hud-top-right .species-hud-card {
     display: none !important;
   }
+
+  .hud-top-left {
+    top: 10px;
+    left: 10px;
+    max-width: min(272px, calc(100vw - 88px));
+  }
+
+  .hud-top-right {
+    top: 10px;
+    right: 10px;
+  }
+
+  .hud-toolbar {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .hud-toolbar-desktop {
+    display: none !important;
+  }
+
+  .hud-card.contract-hud-card {
+    padding: 10px 12px;
+  }
+
+  .hud-contract-sub {
+    display: none;
+  }
+
+  .objectives-toggle {
+    display: inline-flex;
+  }
+
+  .contract-hud-card .objectives-panel {
+    display: none;
+    max-height: min(42vh, 280px);
+    overflow-y: auto;
+    margin-top: 6px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .contract-hud-card.objectives-expanded .objectives-panel {
+    display: flex;
+  }
+
+  .contract-hud-card.objectives-expanded .objective-chip-mobile {
+    display: none;
+  }
+
+  .contract-hud-card:not(.objectives-expanded) .objective-chip-mobile {
+    display: block;
+  }
+
+  .hud-bottom {
+    bottom: 10px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .dock-row {
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .orbit-btn {
+    align-self: stretch;
+    width: 38px;
+    min-height: 0;
+    height: auto;
+    padding: 0;
+    border: none;
+    background: transparent;
+    backdrop-filter: none;
+    box-shadow: none;
+    border-radius: 10px;
+    font-size: 1.35rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(241, 245, 240, 0.92);
+  }
+
+  .orbit-btn:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .tool-dock {
+    padding: 5px;
+  }
+
   .tool-btn {
     width: 74px;
     padding: 8px 4px;
   }
+
+  .tool-key {
+    display: none;
+  }
+
+  .tool-name {
+    font-size: 0.68rem;
+  }
+
+  .prompt-banner {
+    padding: 6px 12px;
+    font-size: 0.85rem;
+  }
+
+  .hud-toast {
+    max-width: calc(100vw - 20px);
+    padding: 9px 14px;
+    font-size: 0.82rem;
+    line-height: 1.38;
+  }
+
   .sandbox-row {
     grid-template-columns: 1fr;
   }

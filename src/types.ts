@@ -16,7 +16,13 @@ export type SpeciesId =
   | 'garry_oak'
   | 'california_redwood'
   | 'rhododendron'
-  | 'eucalyptus';
+  | 'eucalyptus'
+  | 'ponderosa_pine'
+  | 'western_larch'
+  | 'blue_spruce'
+  | 'western_white_pine'
+  | 'chokecherry'
+  | 'trembling_aspen';
 
 export type SiteId =
   | 'coastal_homestead'
@@ -24,7 +30,8 @@ export type SiteId =
   | 'timber_ridge'
   | 'storm_bluff'
   | 'coastal_town'
-  | 'pacific_headland';
+  | 'pacific_headland'
+  | 'kootenay_rockies';
 
 export type ToolId = 'prune' | 'fell' | 'wedge' | 'buck';
 
@@ -51,7 +58,12 @@ export interface SpeciesSpec {
     | 'peeling_terracotta'
     | 'pale_checkered'
     | 'redwood_fluted'
-    | 'peeling_eucalyptus';
+    | 'peeling_eucalyptus'
+    | 'ponderosa_puzzle'
+    | 'larch_flaky'
+    | 'white_pine_checkered'
+    | 'cherry_lenticel'
+    | 'aspen_eye';
   heartwoodColor: string;
   sapwoodColor: string;
   foliageColors: string[];
@@ -84,7 +96,13 @@ export interface SpeciesSpec {
     | 'spreading_oak'
     | 'redwood_spire'
     | 'rhody_bloom'
-    | 'eucalyptus_plume';
+    | 'eucalyptus_plume'
+    | 'ponderosa_tuft'
+    | 'larch_spire'
+    | 'blue_spruce_cone'
+    | 'white_pine_tiered'
+    | 'chokecherry_thicket'
+    | 'aspen_shimmer';
 }
 
 export interface HazardSpec {
@@ -92,6 +110,7 @@ export interface HazardSpec {
   label: string;
   type:
     | 'cabin'
+    | 'aframe'
     | 'shed'
     | 'barn'
     | 'fence'

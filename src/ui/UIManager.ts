@@ -2,6 +2,7 @@ import { CAMPAIGN_CONTRACTS, createSandboxContract } from '../data/contracts';
 import { SPECIES_LIST } from '../data/species';
 import { GameEngine } from '../gameplay/GameEngine';
 import { GameHUDState, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
+import { isTouchUi } from './inputHints';
 
 const TOOL_META: Record<ToolId, { name: string; key: string; icon: string; desc: string }> = {
   prune: {
@@ -37,6 +38,7 @@ const SITE_NAMES: Record<SiteId, string> = {
   storm_bluff: 'Storm-Damaged Bluff',
   coastal_town: 'Coastal Town Yards',
   pacific_headland: 'Pacific Headland',
+  kootenay_rockies: 'East Kootenay Rockies',
 };
 
 const WEATHER_NAMES: Record<WeatherId, string> = {
@@ -64,6 +66,8 @@ export class UIManager {
 
   // Cached playing DOM refs so HUD updates smoothly without rebuilding DOM nodes or breaking clicks
   private playingContainer: HTMLDivElement | null = null;
+  private objectivesExpanded = false;
+  private hudMenuOpen = false;
 
   constructor(root: HTMLElement, engine: GameEngine) {
     this.root = root;
@@ -134,10 +138,10 @@ export class UIManager {
 
         <div class="title-actions">
           <button class="btn btn-primary btn-lg" id="btn-play-campaign">
-            ${completedCount > 0 ? `Continue Contract #${nextContract.index}` : 'Start Career Campaign'}
+            ${completedCount > 0 ? `Continue Job #${nextContract.index}` : 'Start Career Campaign'}
           </button>
           <button class="btn btn-secondary" id="btn-open-contracts">
-            Contracts (${completedCount}/${CAMPAIGN_CONTRACTS.length})
+            Jobs (${completedCount}/${CAMPAIGN_CONTRACTS.length})
           </button>
           <button class="btn btn-secondary" id="btn-open-sandbox">
             Free Cut
@@ -155,9 +159,18 @@ export class UIManager {
         </div>
 
         <div class="controls-legend">
-          <span><b>Left-Click</b> Aim, Prune, Saw &amp; Wedge</span>
-          <span><b>Right-Click Drag</b> Orbit Camera</span>
-          <span><b>Scroll / Pinch</b> Zoom</span>
+          <span class="legend-row">
+            <span class="hint-pointer"><b>Left-Click</b> Aim, Prune, Saw &amp; Wedge</span>
+            <span class="hint-touch"><b>Tap</b> Aim, Prune, Saw &amp; Wedge</span>
+          </span>
+          <span class="legend-row">
+            <span class="hint-pointer"><b>Right-Click Drag</b> Orbit Camera</span>
+            <span class="hint-touch"><b>Two-finger drag</b> Orbit Camera</span>
+          </span>
+          <span class="legend-row">
+            <span class="hint-pointer"><b>Scroll / Pinch</b> Zoom</span>
+            <span class="hint-touch"><b>Pinch</b> Zoom</span>
+          </span>
         </div>
       </div>
     `;
@@ -199,7 +212,7 @@ export class UIManager {
             return `
               <div class="contract-card ${done ? 'completed' : ''}" data-contract-id="${c.id}">
                 <div class="contract-top">
-                  <span class="contract-num">Contract #${c.index}</span>
+                  <span class="contract-num">Job #${c.index}</span>
                   <span class="contract-diff" title="Difficulty ${c.difficulty}/5">${diffStr}</span>
                 </div>
                 <h3>${c.title}</h3>
@@ -345,10 +358,26 @@ export class UIManager {
     hud.className = 'hud-layer';
     hud.innerHTML = `
       <div class="hud-top-left">
-        <div class="hud-card contract-hud-card">
-          <div class="hud-contract-title" id="hud-title"></div>
+        <div class="hud-card contract-hud-card" id="contract-hud-card">
+          <div class="contract-hud-head">
+            <div class="hud-contract-title" id="hud-title"></div>
+            <button
+              type="button"
+              class="objectives-toggle"
+              id="btn-toggle-objectives"
+              aria-expanded="false"
+              title="Show job tasks"
+            >
+              <span id="hud-obj-count">0/0</span>
+              <span class="objectives-chevron" aria-hidden="true">▾</span>
+            </button>
+          </div>
+          <button type="button" class="objective-chip-mobile" id="hud-obj-chip" aria-expanded="false">
+            <span class="obj-check" aria-hidden="true">○</span>
+            <span class="obj-text" id="hud-obj-chip-text"></span>
+          </button>
           <div class="hud-contract-sub" id="hud-sub"></div>
-          <ul class="objective-list" id="hud-objectives"></ul>
+          <ul class="objective-list objectives-panel" id="hud-objectives"></ul>
         </div>
       </div>
 
@@ -358,9 +387,16 @@ export class UIManager {
             <span class="wind-arrow" id="hud-wind-arrow">↑</span>
             <span id="hud-wind-text">4 mph</span>
           </div>
-          <button class="icon-btn" id="btn-mute" title="Toggle Sound">🔊</button>
-          <button class="icon-btn" id="btn-restart" title="Restart Contract">↻</button>
-          <button class="icon-btn" id="btn-menu" title="Contracts Menu">☰</button>
+          <button class="icon-btn hud-toolbar-desktop" id="btn-mute" title="Toggle Sound">🔊</button>
+          <button class="icon-btn hud-toolbar-desktop" id="btn-restart" title="Restart Job">↻</button>
+          <div class="hud-menu-wrap">
+            <button class="icon-btn" id="btn-menu" title="Menu" aria-expanded="false">☰</button>
+            <div class="hud-menu-popover" id="hud-menu-popover" hidden>
+              <button type="button" class="hud-menu-item" id="btn-menu-mute">🔊 Sound on</button>
+              <button type="button" class="hud-menu-item" id="btn-menu-restart">↻ Restart job</button>
+              <button type="button" class="hud-menu-item" id="btn-menu-contracts">All Jobs</button>
+            </div>
+          </div>
         </div>
 
         <div class="hud-card species-hud-card" id="hud-species-card">
@@ -428,10 +464,57 @@ export class UIManager {
 
     this.root.appendChild(hud);
     this.playingContainer = hud;
+    this.objectivesExpanded = false;
+    this.hudMenuOpen = false;
 
-    hud.querySelector('#btn-mute')?.addEventListener('click', () => this.engine.toggleMute());
-    hud.querySelector('#btn-restart')?.addEventListener('click', () => this.engine.replayContract());
-    hud.querySelector('#btn-menu')?.addEventListener('click', () => this.engine.openScreen('contracts'));
+    const toggleMute = () => this.engine.toggleMute();
+    const restartJob = () => this.engine.replayContract();
+    const openContracts = () => this.engine.openScreen('contracts');
+
+    hud.querySelector('#btn-mute')?.addEventListener('click', toggleMute);
+    hud.querySelector('#btn-restart')?.addEventListener('click', restartJob);
+    hud.querySelector('#btn-menu-mute')?.addEventListener('click', () => {
+      toggleMute();
+      this.setHudMenuOpen(false);
+    });
+    hud.querySelector('#btn-menu-restart')?.addEventListener('click', () => {
+      restartJob();
+      this.setHudMenuOpen(false);
+    });
+    hud.querySelector('#btn-menu-contracts')?.addEventListener('click', () => {
+      openContracts();
+      this.setHudMenuOpen(false);
+    });
+
+    const menuBtn = hud.querySelector('#btn-menu') as HTMLButtonElement;
+    menuBtn?.addEventListener('click', (e) => {
+      if (isTouchUi()) {
+        e.stopPropagation();
+        this.setHudMenuOpen(!this.hudMenuOpen);
+      } else {
+        openContracts();
+      }
+    });
+
+    hud.addEventListener('click', (e) => {
+      const t = e.target as Node;
+      const pop = hud.querySelector('#hud-menu-popover');
+      if (
+        this.hudMenuOpen &&
+        pop &&
+        !pop.contains(t) &&
+        !menuBtn.contains(t)
+      ) {
+        this.setHudMenuOpen(false);
+      }
+    });
+
+    const toggleObjectives = () => {
+      this.objectivesExpanded = !this.objectivesExpanded;
+      this.syncObjectivesExpandedUi(hud);
+    };
+    hud.querySelector('#btn-toggle-objectives')?.addEventListener('click', toggleObjectives);
+    hud.querySelector('#hud-obj-chip')?.addEventListener('click', toggleObjectives);
     hud.querySelector('#btn-reaim')?.addEventListener('click', () => this.engine.resetAim());
     hud.querySelector('#btn-orbit-left')?.addEventListener('click', () => this.engine.orbitCameraStep(-1));
     hud.querySelector('#btn-orbit-right')?.addEventListener('click', () => this.engine.orbitCameraStep(1));
@@ -441,6 +524,10 @@ export class UIManager {
       const treeId = li?.dataset.treeId;
       if (treeId) {
         this.engine.selectTree(treeId);
+        if (isTouchUi()) {
+          this.objectivesExpanded = false;
+          this.syncObjectivesExpandedUi(hud);
+        }
       }
     });
 
@@ -451,7 +538,28 @@ export class UIManager {
       });
     });
 
+    this.syncObjectivesExpandedUi(hud);
     this.updatePlayingHUD(state);
+  }
+
+  private setHudMenuOpen(open: boolean): void {
+    const hud = this.playingContainer;
+    if (!hud) return;
+    this.hudMenuOpen = open;
+    const pop = hud.querySelector('#hud-menu-popover') as HTMLElement;
+    const btn = hud.querySelector('#btn-menu') as HTMLButtonElement;
+    if (pop) pop.hidden = !open;
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    btn?.classList.toggle('active', open);
+  }
+
+  private syncObjectivesExpandedUi(hud: HTMLElement): void {
+    const card = hud.querySelector('#contract-hud-card');
+    const toggle = hud.querySelector('#btn-toggle-objectives') as HTMLButtonElement | null;
+    card?.classList.toggle('objectives-expanded', this.objectivesExpanded);
+    toggle?.setAttribute('aria-expanded', this.objectivesExpanded ? 'true' : 'false');
+    const chip = hud.querySelector('#hud-obj-chip') as HTMLButtonElement | null;
+    chip?.setAttribute('aria-expanded', this.objectivesExpanded ? 'true' : 'false');
   }
 
   private updatePlayingHUD(state: GameHUDState): void {
@@ -477,13 +585,32 @@ export class UIManager {
       objEl.innerHTML = nextObjHtml;
     }
 
+    const doneCount = state.objectives.filter((o) => o.done).length;
+    (hud.querySelector('#hud-obj-count') as HTMLElement).textContent = `${doneCount}/${state.objectives.length}`;
+    const nextOpen = state.objectives.find((o) => !o.done);
+    const chipText = hud.querySelector('#hud-obj-chip-text') as HTMLElement;
+    chipText.textContent = nextOpen
+      ? nextOpen.text
+      : state.objectives.length > 0
+        ? 'All tasks complete'
+        : '';
+    const chipCheck = hud.querySelector('#hud-obj-chip .obj-check') as HTMLElement | null;
+    if (chipCheck) {
+      chipCheck.textContent = nextOpen ? '○' : state.objectives.length > 0 ? '✓' : '○';
+    }
+
     // Wind & Mute
     const mph = Math.round(state.windSpeed * 45);
     (hud.querySelector('#hud-wind-text') as HTMLElement).textContent = `${mph} mph`;
     const windArrow = hud.querySelector('#hud-wind-arrow') as HTMLElement;
     const deg = (state.windAngle * 180) / Math.PI - state.cameraAngleDeg;
     windArrow.style.transform = `rotate(${deg}deg)`;
-    (hud.querySelector('#btn-mute') as HTMLElement).textContent = state.muted ? '🔇' : '🔊';
+    const muteGlyph = state.muted ? '🔇' : '🔊';
+    (hud.querySelector('#btn-mute') as HTMLElement).textContent = muteGlyph;
+    const menuMute = hud.querySelector('#btn-menu-mute') as HTMLElement;
+    if (menuMute) {
+      menuMute.textContent = state.muted ? '🔇 Sound off' : '🔊 Sound on';
+    }
 
     // Active Species Card
     const spCard = hud.querySelector('#hud-species-card') as HTMLElement;
@@ -602,7 +729,7 @@ export class UIManager {
     wrap.innerHTML = `
       <div class="debrief-card">
         <div class="eyebrow">${state.contract.title}</div>
-        <h2>${d.stars === 3 ? 'Master Arborist Work!' : d.stars === 2 ? 'Contract Complete!' : 'Job Logged — Review Safety'}</h2>
+        <h2>${d.stars === 3 ? 'Master Arborist Work!' : d.stars === 2 ? 'Job Complete!' : 'Job Logged — Review Safety'}</h2>
         <div class="debrief-stars">${'★'.repeat(d.stars)}<span>${'☆'.repeat(3 - d.stars)}</span></div>
 
         <div class="debrief-stats">
@@ -636,9 +763,9 @@ export class UIManager {
         }
 
         <div class="debrief-actions">
-          ${d.hasNextContract ? `<button class="btn btn-primary btn-lg" id="btn-next-contract">Next Contract →</button>` : ''}
-          <button class="btn btn-secondary" id="btn-replay">Replay Site</button>
-          <button class="btn btn-ghost" id="btn-all-contracts">All Contracts</button>
+          ${d.hasNextContract ? `<button class="btn btn-primary btn-lg" id="btn-next-contract">Next Job →</button>` : ''}
+          <button class="btn btn-secondary" id="btn-replay">Try Again</button>
+          <button class="btn btn-ghost" id="btn-all-contracts">All Jobs</button>
         </div>
       </div>
     `;

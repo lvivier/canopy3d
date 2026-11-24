@@ -46,6 +46,13 @@ export class CameraController {
   private lastX = 0;
   private lastY = 0;
 
+  /** Active touch pointers (pointer events) for two-finger orbit + pinch zoom. */
+  private activeTouches = new Map<number, { x: number; y: number }>();
+  private touchNav = false;
+  private touchCentroid = { x: 0, y: 0 };
+  private touchPinchSpan = 0;
+  private onMultiTouchBegin: (() => void) | null = null;
+
   private shakeMagnitude = 0;
   private autoRotateSpeed = 0;
 
@@ -70,6 +77,18 @@ export class CameraController {
     this.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
     this.domElement.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') {
+        this.upsertTouchPointer(e);
+        if (this.activeTouches.size >= 2) {
+          if (this.intro) this.cancelIntro(false);
+          const starting = !this.touchNav;
+          this.beginTouchNav();
+          if (starting) this.onMultiTouchBegin?.();
+          e.preventDefault();
+        }
+        return;
+      }
+
       if (e.button === 2 || e.button === 1 || (e.button === 0 && e.shiftKey)) {
         if (this.intro) this.cancelIntro(false);
         this.isOrbiting = true;
@@ -80,6 +99,15 @@ export class CameraController {
     });
 
     window.addEventListener('pointermove', (e) => {
+      if (e.pointerType === 'touch' && this.activeTouches.has(e.pointerId)) {
+        this.upsertTouchPointer(e);
+        if (this.activeTouches.size >= 2) {
+          this.applyTouchNav();
+          e.preventDefault();
+        }
+        return;
+      }
+
       if (!this.isOrbiting) return;
       const dx = e.clientX - this.lastX;
       const dy = e.clientY - this.lastY;
@@ -90,19 +118,45 @@ export class CameraController {
       this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar - dy * 0.0052, 0.28, 1.46);
     });
 
-    window.addEventListener('pointerup', () => {
+    const endPointer = (e: PointerEvent): void => {
+      if (e.pointerType === 'touch') {
+        const wasNav = this.touchNav;
+        this.activeTouches.delete(e.pointerId);
+        if (this.activeTouches.size < 2) {
+          this.touchNav = false;
+          this.touchPinchSpan = 0;
+        } else if (wasNav) {
+          this.beginTouchNav();
+        }
+        return;
+      }
+
       if (this.isOrbiting) {
         this.isOrbiting = false;
         this.domElement.style.cursor = '';
       }
-    });
+    };
+
+    window.addEventListener('pointerup', endPointer);
+    window.addEventListener('pointercancel', endPointer);
+
+    this.domElement.addEventListener(
+      'touchmove',
+      (e) => {
+        if (this.touchNav || this.activeTouches.size >= 2) {
+          e.preventDefault();
+        }
+      },
+      { passive: false }
+    );
 
     this.domElement.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
         if (this.intro) this.cancelIntro(false);
-        const factor = 1 + Math.sign(e.deltaY) * 0.11;
+        const delta = e.ctrlKey ? e.deltaY * 0.018 : Math.sign(e.deltaY) * 0.11;
+        const factor = e.ctrlKey ? Math.exp(-delta) : 1 + delta;
         this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * factor, 6.5, 52);
       },
       { passive: false }
@@ -160,7 +214,16 @@ export class CameraController {
 
     window.addEventListener('blur', () => {
       this.heldKeys.clear();
+      this.activeTouches.clear();
+      this.touchNav = false;
+      this.touchPinchSpan = 0;
     });
+
+    // Block iOS Safari page-level pinch zoom (viewport meta is not always enough).
+    const blockGesture = (e: Event) => e.preventDefault();
+    document.addEventListener('gesturestart', blockGesture, { passive: false });
+    document.addEventListener('gesturechange', blockGesture, { passive: false });
+    document.addEventListener('gestureend', blockGesture, { passive: false });
   }
 
   public setKeyboardEnabled(enabled: boolean): void {
@@ -170,8 +233,65 @@ export class CameraController {
     }
   }
 
+  public setMultiTouchBeginListener(listener: (() => void) | null): void {
+    this.onMultiTouchBegin = listener;
+  }
+
+  public getActiveTouchCount(): number {
+    return this.activeTouches.size;
+  }
+
+  public isMultiTouchNavigating(): boolean {
+    return this.touchNav && this.activeTouches.size >= 2;
+  }
+
   public isUserOrbiting(): boolean {
-    return this.isOrbiting;
+    return this.isOrbiting || this.isMultiTouchNavigating();
+  }
+
+  private upsertTouchPointer(e: PointerEvent): void {
+    this.activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  }
+
+  private touchPair(): [{ x: number; y: number }, { x: number; y: number }] | null {
+    const pts = Array.from(this.activeTouches.values());
+    if (pts.length < 2) return null;
+    return [pts[0], pts[1]];
+  }
+
+  private beginTouchNav(): void {
+    const pair = this.touchPair();
+    if (!pair) return;
+    const [a, b] = pair;
+    this.touchNav = true;
+    this.touchCentroid.x = (a.x + b.x) * 0.5;
+    this.touchCentroid.y = (a.y + b.y) * 0.5;
+    this.touchPinchSpan = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  }
+
+  private applyTouchNav(): void {
+    const pair = this.touchPair();
+    if (!pair) return;
+    const [a, b] = pair;
+    const cx = (a.x + b.x) * 0.5;
+    const cy = (a.y + b.y) * 0.5;
+    const span = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+
+    if (this.touchNav && this.touchPinchSpan > 0) {
+      const dx = cx - this.touchCentroid.x;
+      const dy = cy - this.touchCentroid.y;
+      this.desiredAzimuth -= dx * 0.0068;
+      this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar - dy * 0.0052, 0.28, 1.46);
+
+      const pinchRatio = span / this.touchPinchSpan;
+      if (Math.abs(pinchRatio - 1) > 0.004) {
+        this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance / pinchRatio, 6.5, 52);
+      }
+    }
+
+    this.touchCentroid.x = cx;
+    this.touchCentroid.y = cy;
+    this.touchPinchSpan = span;
   }
 
   public setAutoRotate(speed: number): void {

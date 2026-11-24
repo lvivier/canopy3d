@@ -113,6 +113,22 @@ function createFoliageCluster(
         // California Redwood: wide flat feathery fog-belt needle sprays
         geo = new THREE.DodecahedronGeometry(scale * (0.52 + rand() * 0.24), 1);
         geo.scale(1.42, 0.36, 1.32);
+      } else if (spec.crownShape === 'ponderosa_tuft') {
+        // Ponderosa Pine: chunky irregular sunlit long-needle tufts perched on open boughs
+        geo = new THREE.IcosahedronGeometry(scale * (0.54 + rand() * 0.26), 1);
+        geo.scale(1.22, 0.72, 1.18);
+      } else if (spec.crownShape === 'larch_spire') {
+        // Western Larch: airy, luminous golden-amber deciduous needle tiers
+        geo = new THREE.DodecahedronGeometry(scale * (0.44 + rand() * 0.22), 1);
+        geo.scale(1.36, 0.38, 1.24);
+      } else if (spec.crownShape === 'blue_spruce_cone') {
+        // Blue Spruce: crisp, dense stiff glacier-blue needle whorls
+        geo = new THREE.ConeGeometry(scale * (0.58 + rand() * 0.22), scale * 0.42, 7);
+        geo.scale(1.18, 0.65, 1.18);
+      } else if (spec.crownShape === 'white_pine_tiered') {
+        // Western White Pine: soft horizontal layered blue-green needle plumes
+        geo = new THREE.DodecahedronGeometry(scale * (0.52 + rand() * 0.24), 1);
+        geo.scale(1.46, 0.34, 1.34);
       } else {
         // Douglas Fir: lush layered evergreen bough pads
         geo = new THREE.DodecahedronGeometry(scale * (0.5 + rand() * 0.26), 1);
@@ -412,6 +428,80 @@ function createFoliageCluster(
       drape.rotation.set((rand() - 0.5) * 0.22, rand() * Math.PI, (rand() - 0.5) * 0.22);
       drape.castShadow = true;
       group.add(drape);
+    }
+  } else if (spec.crownShape === 'chokecherry_thicket') {
+    // Chokecherry: bushy deep-green oval thicket pads studded with white raceme blossoms & ruby berries
+    const leafColors = isDeadwood ? deadColors : spec.foliageColors.slice(0, 3);
+    const blossomColor = spec.foliageColors[3] ?? '#f3f1e8';
+    const berryColor = spec.foliageColors[4] ?? '#6b1d35';
+    const leafCount = isDeadwood ? 2 : 4 + Math.floor(rand() * 2);
+    for (let i = 0; i < leafCount; i++) {
+      const r = scale * (0.52 + rand() * 0.26);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.16, 0.84, 1.12);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: leafColors[Math.floor(rand() * leafColors.length)],
+          roughness: 0.76,
+          flatShading: true,
+        })
+      );
+      mesh.position.set(
+        (rand() - 0.5) * scale * 0.88,
+        (rand() - 0.35) * scale * 0.48,
+        (rand() - 0.5) * scale * 0.88
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    if (!isDeadwood) {
+      for (let b = 0; b < 3; b++) {
+        const isBlossom = b < 2;
+        const accent = new THREE.Mesh(
+          isBlossom
+            ? new THREE.ConeGeometry(scale * 0.14, scale * 0.42, 5)
+            : new THREE.IcosahedronGeometry(scale * 0.14, 0),
+          new THREE.MeshStandardMaterial({
+            color: isBlossom ? blossomColor : berryColor,
+            roughness: 0.55,
+            flatShading: true,
+          })
+        );
+        accent.position.set(
+          (rand() - 0.5) * scale * 0.85,
+          scale * (0.1 + rand() * 0.34),
+          (rand() - 0.5) * scale * 0.85
+        );
+        accent.rotation.set((rand() - 0.5) * 0.5, rand() * Math.PI, (rand() - 0.5) * 0.5);
+        group.add(accent);
+      }
+    }
+  } else if (spec.crownShape === 'aspen_shimmer') {
+    // Trembling Aspen: airy shimmering clusters of golden-yellow & chartreuse coin leaves
+    const puffCount = isDeadwood ? 2 : 5 + Math.floor(rand() * 3);
+    for (let i = 0; i < puffCount; i++) {
+      const r = scale * (0.48 + rand() * 0.26);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.15, 0.88, 1.15);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: pickColor(),
+          roughness: 0.62,
+          metalness: 0.06,
+          flatShading: true,
+        })
+      );
+      mesh.position.set(
+        (rand() - 0.5) * scale * 0.92,
+        (rand() - 0.25) * scale * 0.65,
+        (rand() - 0.5) * scale * 0.92
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
     }
   } else {
     // Deciduous: Bigleaf Maple / Red Alder / White Poplar (shimmering silver-backed) lush sunlit leaf canopies
@@ -718,21 +808,44 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   backCutGroup.add(backTopFace, backBottomFace, backHingeWall);
   trunkPivot.add(backCutGroup);
 
-  // 5. Felling Wedges (3 high-vis forestry orange wedges tucked into the back cut!)
+  // 5. Felling Wedges (3 tapered high-vis forestry orange wedges driven into the back cut!)
   const wedgeMeshes: THREE.Mesh[] = [];
-  const wedgeMat = new THREE.MeshStandardMaterial({
-    color: '#f97316',
-    roughness: 0.45,
-    metalness: 0.15,
+  const wedgeLen = Math.max(0.48, baseRadius * 1.12);
+  const wedgeButtH = Math.max(0.14, baseRadius * 0.28);
+  const wedgeWidth = Math.max(0.22, baseRadius * 0.42);
+  const wedgeShape = new THREE.Shape();
+  // Sharp tip at +X (points straight into the back cut), flat hammer butt at -X
+  wedgeShape.moveTo(-wedgeLen * 0.5, -wedgeButtH * 0.5);
+  wedgeShape.lineTo(wedgeLen * 0.5, -0.012);
+  wedgeShape.lineTo(wedgeLen * 0.5, 0.012);
+  wedgeShape.lineTo(-wedgeLen * 0.5, wedgeButtH * 0.5);
+  wedgeShape.closePath();
+  const wedgeGeo = new THREE.ExtrudeGeometry(wedgeShape, {
+    depth: wedgeWidth,
+    bevelEnabled: true,
+    bevelThickness: 0.012,
+    bevelSize: 0.01,
+    bevelSegments: 2,
   });
+  wedgeGeo.translate(0, 0, -wedgeWidth * 0.5);
+
   for (let w = 0; w < 3; w++) {
-    const wGeo = new THREE.BoxGeometry(baseRadius * 0.72, 0.11, 0.16);
-    const wMesh = new THREE.Mesh(wGeo, wedgeMat);
+    const wedgeMat = new THREE.MeshStandardMaterial({
+      color: '#ff6a13',
+      emissive: '#ff5500',
+      emissiveIntensity: 0.18,
+      roughness: 0.36,
+      metalness: 0.08,
+      transparent: true,
+      opacity: 1,
+    });
+    const wMesh = new THREE.Mesh(wedgeGeo, wedgeMat);
     const zOff = (w - 1) * baseRadius * 0.52;
     wMesh.position.set(cutCenterXZ.x - baseRadius * 1.05, cutTopY + 0.07, cutCenterXZ.y + zOff);
-    wMesh.rotation.z = 0.08;
+    wMesh.rotation.z = 0.05;
     wMesh.visible = false;
     wMesh.castShadow = true;
+    wMesh.userData = { isWedge: true, wedgeLen };
     trunkPivot.add(wMesh);
     wedgeMeshes.push(wMesh);
   }
@@ -749,11 +862,13 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
       : spec.species === 'japanese_maple' ||
           spec.species === 'lilac' ||
           spec.species === 'smoke_tree' ||
-          spec.species === 'rhododendron'
+          spec.species === 'rhododendron' ||
+          spec.species === 'chokecherry'
         ? Math.max(8, spec.hazardBranches + 4)
         : spec.species === 'red_alder' ||
             spec.species === 'white_poplar' ||
-            spec.species === 'eucalyptus'
+            spec.species === 'eucalyptus' ||
+            spec.species === 'trembling_aspen'
           ? Math.max(9, spec.hazardBranches + 4)
           : Math.max(11, spec.hazardBranches + 5);
 
@@ -811,13 +926,19 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
             ? 4.3
             : spec.species === 'japanese_maple' || spec.species === 'smoke_tree'
               ? 4.5
-              : spec.species === 'lilac' || spec.species === 'rhododendron'
+              : spec.species === 'lilac' ||
+                  spec.species === 'rhododendron' ||
+                  spec.species === 'chokecherry'
                 ? 3.7
                 : spec.species === 'eucalyptus'
                   ? 3.9
-                  : speciesSpec.category === 'deciduous'
-                    ? 3.8
-                    : 3.2;
+                  : spec.species === 'trembling_aspen'
+                    ? 3.1
+                    : speciesSpec.category === 'deciduous'
+                      ? 3.8
+                      : spec.species === 'ponderosa_pine' || spec.species === 'western_white_pine'
+                        ? 3.5
+                        : 3.2;
     const bLength =
       widthSpread *
       Math.max(0.55, sizeFactor) *
@@ -852,8 +973,14 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     else if (spec.species === 'garry_oak') pitch = 0.2 + rand() * 0.18;
     else if (spec.species === 'arbutus') pitch = 0.28 + rand() * 0.24;
     else if (spec.species === 'rhododendron') pitch = 0.36 + rand() * 0.22;
+    else if (spec.species === 'chokecherry') pitch = 0.4 + rand() * 0.2;
+    else if (spec.species === 'trembling_aspen') pitch = 0.46 + rand() * 0.2;
     else if (spec.species === 'eucalyptus') pitch = 0.38 + rand() * 0.22;
     else if (spec.species === 'california_redwood') pitch = -0.1;
+    else if (spec.species === 'ponderosa_pine') pitch = 0.08 + rand() * 0.14;
+    else if (spec.species === 'western_larch') pitch = -0.06 + rand() * 0.1;
+    else if (spec.species === 'blue_spruce') pitch = -0.08;
+    else if (spec.species === 'western_white_pine') pitch = 0.04 + rand() * 0.08;
     else pitch = -0.06 + (heightFrac - 0.2) * 0.25;
 
     if (isTarget && spec.task === 'prune_only') {
@@ -1184,7 +1311,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
               spec.species === 'smoke_tree' ||
               spec.species === 'rhododendron'
             ? spec.height * 0.33
-            : spec.species === 'lilac'
+            : spec.species === 'lilac' || spec.species === 'chokecherry'
               ? spec.height * 0.29
               : spec.species === 'bigleaf_maple'
                 ? spec.height * 0.27
@@ -1192,7 +1319,9 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
                   ? spec.height * 0.24
                   : spec.species === 'white_poplar'
                     ? spec.height * 0.22
-                    : spec.height * 0.19;
+                    : spec.species === 'trembling_aspen'
+                      ? spec.height * 0.2
+                      : spec.height * 0.19;
     const folScale =
       spec.species === 'bigleaf_maple' || spec.species === 'garry_oak'
         ? 2.1
@@ -1200,12 +1329,13 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
             spec.species === 'arbutus' ||
             spec.species === 'eucalyptus'
           ? 1.65
-          : spec.species === 'white_poplar'
+          : spec.species === 'white_poplar' || spec.species === 'trembling_aspen'
             ? 1.38
             : spec.species === 'japanese_maple' ||
                 spec.species === 'lilac' ||
                 spec.species === 'smoke_tree' ||
-                spec.species === 'rhododendron'
+                spec.species === 'rhododendron' ||
+                spec.species === 'chokecherry'
               ? Math.max(1.05, spec.height * 0.165)
               : 1.55;
     for (let c = 0; c < clusterCount; c++) {
@@ -1221,7 +1351,9 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
             ? 0.48
             : spec.species === 'garry_oak'
               ? 0.56
-              : spec.species === 'white_poplar' || spec.species === 'eucalyptus'
+              : spec.species === 'white_poplar' ||
+                  spec.species === 'eucalyptus' ||
+                  spec.species === 'trembling_aspen'
                 ? 0.94
                 : 0.72);
       const pz = domeCenter.z + Math.sin(phi) * Math.sin(theta) * r;
@@ -1377,6 +1509,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   rootGroup.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
+    if (mesh.userData?.isWedge) return;
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const mat of mats) {
       if (!mat || seenMats.has(mat)) continue;

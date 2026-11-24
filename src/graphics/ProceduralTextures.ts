@@ -361,6 +361,135 @@ class TextureCache {
         bctx.lineTo(cx, size);
         bctx.stroke();
       }
+    } else if (spec.barkStyle === 'ponderosa_puzzle') {
+      // Ponderosa Pine: large chunky cinnamon-orange jigsaw plates separated by deep charcoal fissures
+      for (let i = 0; i < 115; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 22 + rand() * 38;
+        const h = 42 + rand() * 88;
+        ctx.fillStyle =
+          rand() > 0.55
+            ? '#b86c3f'
+            : rand() > 0.28
+              ? '#9a5430'
+              : '#c9814c';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + w * (0.85 + rand() * 0.25), y + (rand() - 0.5) * 14);
+        ctx.lineTo(x + w + (rand() - 0.5) * 14, y + h);
+        ctx.lineTo(x + (rand() - 0.5) * 12, y + h * (0.9 + rand() * 0.18));
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(34, 19, 13, 0.85)';
+        ctx.lineWidth = 4.5 + rand() * 3.5;
+        ctx.stroke();
+
+        bctx.fillStyle = '#cfcfcf';
+        bctx.fillRect(x, y, w, h);
+        bctx.strokeStyle = '#1e1e1e';
+        bctx.lineWidth = 5;
+        bctx.strokeRect(x, y, w, h);
+      }
+    } else if (spec.barkStyle === 'larch_flaky') {
+      // Western Larch: deep reddish-cinnamon furrowed flaky bark ridges
+      for (let i = 0; i < 110; i++) {
+        const x = rand() * size;
+        const w = 5 + rand() * 11;
+        ctx.strokeStyle = rand() > 0.45 ? spec.barkSecondary : '#2d1810';
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        let cx = x;
+        ctx.moveTo(cx, 0);
+        for (let y = 0; y <= size; y += 36) {
+          cx += (rand() - 0.5) * 8;
+          ctx.lineTo(cx, y);
+        }
+        ctx.stroke();
+        bctx.strokeStyle = '#262626';
+        bctx.lineWidth = w;
+        bctx.beginPath();
+        bctx.moveTo(x, 0);
+        bctx.lineTo(cx, size);
+        bctx.stroke();
+      }
+      for (let i = 0; i < 180; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 10 + rand() * 20;
+        const h = 24 + rand() * 54;
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(156, 86, 56, 0.52)' : 'rgba(122, 62, 42, 0.48)';
+        ctx.fillRect(x, y, w, h);
+        bctx.fillStyle = 'rgba(218, 218, 218, 0.4)';
+        bctx.fillRect(x, y, w, h);
+      }
+    } else if (spec.barkStyle === 'white_pine_checkered') {
+      // Western White Pine: silvery-gray bark divided into neat small rectangular checkered plates
+      for (let i = 0; i < 240; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 12 + rand() * 18;
+        const h = 14 + rand() * 22;
+        ctx.fillStyle = rand() > 0.45 ? '#878986' : '#656764';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = 'rgba(42, 43, 41, 0.72)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+
+        bctx.fillStyle = rand() > 0.5 ? '#c0c0c0' : '#565656';
+        bctx.fillRect(x, y, w, h);
+      }
+    } else if (spec.barkStyle === 'cherry_lenticel') {
+      // Chokecherry: smooth dark mahogany-brown bark with crisp pale horizontal lenticel stripes
+      for (let i = 0; i < 120; i++) {
+        const x = rand() * size;
+        const w = 3 + rand() * 8;
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(94, 58, 48, 0.34)' : 'rgba(34, 20, 18, 0.36)';
+        ctx.fillRect(x, 0, w, size);
+      }
+      for (let i = 0; i < 260; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 8 + rand() * 24;
+        ctx.fillStyle = rand() > 0.4 ? 'rgba(212, 182, 148, 0.65)' : 'rgba(176, 138, 108, 0.52)';
+        ctx.fillRect(x, y, w, 2.2);
+        bctx.fillStyle = '#c4c4c4';
+        bctx.fillRect(x, y, w, 2.2);
+      }
+    } else if (spec.barkStyle === 'aspen_eye') {
+      // Trembling Aspen: luminous chalk-white smooth bark with dark curved horizontal eye knots
+      for (let i = 0; i < 80; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const rx = 20 + rand() * 48;
+        const ry = 26 + rand() * 58;
+        ctx.fillStyle = rand() > 0.4 ? 'rgba(244, 245, 238, 0.55)' : 'rgba(198, 208, 190, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Signature dark horizontal eye scars & branch knots
+      for (let i = 0; i < 125; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 8 + rand() * 22;
+        const h = 2.5 + rand() * 4.5;
+        ctx.fillStyle = 'rgba(38, 39, 34, 0.82)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, w * 0.55, h, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(42, 43, 38, 0.72)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x - w, y + 1);
+        ctx.quadraticCurveTo(x, y - h * 1.4, x + w, y + 1);
+        ctx.stroke();
+
+        bctx.fillStyle = '#363636';
+        bctx.beginPath();
+        bctx.ellipse(x, y, w * 0.55, h, 0, 0, Math.PI * 2);
+        bctx.fill();
+      }
     } else {
       // Western Hemlock: russet-brown flat plates & narrow dark grooves
       for (let i = 0; i < 160; i++) {
@@ -466,7 +595,7 @@ class TextureCache {
   }
 
   public getTerrainTexture(
-    style: 'homestead' | 'creek' | 'ridge' | 'bluff' | 'suburban' | 'headland'
+    style: 'homestead' | 'creek' | 'ridge' | 'bluff' | 'suburban' | 'headland' | 'kootenay'
   ): THREE.CanvasTexture {
     const cached = this.terrainCache.get(style);
     if (cached) return cached;
@@ -485,6 +614,7 @@ class TextureCache {
       bluff: { base: '#51693b', mid: '#657d48', dark: '#3c502b', duff: '#705e42' },
       suburban: { base: '#4e833a', mid: '#639948', dark: '#3e6e2e', duff: '#5a7838' },
       headland: { base: '#6b7b3e', mid: '#88944c', dark: '#4d5c2d', duff: '#9b8d56' },
+      kootenay: { base: '#8d8252', mid: '#aba068', dark: '#6d6b44', duff: '#a47d4e' },
     };
     const p = palettes[style];
 
@@ -518,16 +648,25 @@ class TextureCache {
     }
     ctx.globalAlpha = 1;
 
-    // Fine grass blades & cedar needle duff speckles
+    // Fine grass blades & cedar/pine needle duff speckles
     for (let i = 0; i < 3200; i++) {
       const x = rand() * size;
       const y = rand() * size;
-      ctx.fillStyle =
-        rand() > 0.65
-          ? 'rgba(110, 148, 65, 0.24)'
-          : rand() > 0.35
-            ? 'rgba(26, 40, 18, 0.24)'
-            : 'rgba(105, 82, 52, 0.22)';
+      if (style === 'kootenay') {
+        ctx.fillStyle =
+          rand() > 0.55
+            ? 'rgba(196, 178, 108, 0.30)'
+            : rand() > 0.25
+              ? 'rgba(116, 118, 76, 0.24)'
+              : 'rgba(148, 106, 62, 0.24)';
+      } else {
+        ctx.fillStyle =
+          rand() > 0.65
+            ? 'rgba(110, 148, 65, 0.24)'
+            : rand() > 0.35
+              ? 'rgba(26, 40, 18, 0.24)'
+              : 'rgba(105, 82, 52, 0.22)';
+      }
       ctx.fillRect(x, y, 2, 4);
     }
 

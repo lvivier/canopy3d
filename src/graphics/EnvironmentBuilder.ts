@@ -2,16 +2,42 @@ import * as THREE from 'three';
 import { ContractSpec, HazardSpec, SiteId, WeatherId } from '../types';
 import { textureCache } from './ProceduralTextures';
 
+export interface SceneOccluder {
+  rootGroup: THREE.Object3D;
+  occlusionFade: number;
+  occlusionMaterials: Array<{ mat: THREE.Material; baseOpacity: number }>;
+}
+
 export interface BuiltEnvironment {
   group: THREE.Group;
   hazardGroups: Map<string, THREE.Group>;
   hazardWarningRings: THREE.Mesh[];
+  sceneOccluders: SceneOccluder[];
   waterMesh?: THREE.Mesh;
   sunLight: THREE.DirectionalLight;
   hemiLight: THREE.HemisphereLight;
   skyMesh: THREE.Mesh;
   windAnimatedMeshes: THREE.Object3D[];
   updateBackgroundOcclusion: (cameraPos: THREE.Vector3, targetPos: THREE.Vector3, dt: number) => void;
+}
+
+function collectOcclusionMaterials(root: THREE.Object3D): SceneOccluder['occlusionMaterials'] {
+  const occlusionMaterials: SceneOccluder['occlusionMaterials'] = [];
+  const seenMats = new Set<THREE.Material>();
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const mat of mats) {
+      if (!mat || seenMats.has(mat)) continue;
+      if ((mat as THREE.MeshBasicMaterial).isMeshBasicMaterial) continue;
+      seenMats.add(mat);
+      occlusionMaterials.push({
+        mat,
+        baseOpacity: mat.opacity ?? 1,
+      });
+    }
+  });
+  return occlusionMaterials;
 }
 
 function makeRng(seed: number): () => number {
@@ -53,6 +79,16 @@ export function getTerrainHeight(x: number, z: number, site: SiteId): number {
     // Sunlit coastal savanna headland sloping toward a deep Pacific cove on +X/+Z
     const coveSlope = (-x * 0.14 - z * 0.15) * smooth;
     return Math.max(-6.5, smooth * (3.6 + ridgeNoise * 0.68) + coveSlope);
+  }
+  if (site === 'kootenay_rockies') {
+    // Rolling East Kootenay foothills: broad dry-grass hills rising around a level montane bench,
+    // staying lower on the north-east vista side so the distant Rocky Mountain peaks shine through
+    const rollingHills =
+      Math.sin(x * 0.038 + 1.1) * Math.cos(z * 0.034 - 0.6) * 8.8 +
+      Math.sin((x + z) * 0.055) * 3.8 +
+      Math.cos(dist * 0.048) * 2.6;
+    const valleyDip = x > 8 && z < -6 ? -3.4 * smooth : 0;
+    return Math.max(-2.5, smooth * (7.2 + rollingHills) + valleyDip);
   }
   if (site === 'misty_creek') {
     return smooth * (6.2 + ridgeNoise * 0.85);
@@ -224,6 +260,130 @@ function buildCabin(): THREE.Group {
   const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.3, 0.16), new THREE.MeshStandardMaterial({ color: '#472c1c', roughness: 0.8 }));
   door.position.set(0, 1.35, 3.12);
   g.add(door);
+
+  return g;
+}
+
+function buildAFrame(): THREE.Group {
+  const g = new THREE.Group();
+  const timberTex = textureCache.getWoodPlankTexture('#8c5a36', 10);
+  const deckTex = textureCache.getWoodPlankTexture('#9c6f46', 8);
+  const timberMat = new THREE.MeshStandardMaterial({ map: timberTex, roughness: 0.84 });
+  const deckMat = new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.88 });
+  const roofMat = new THREE.MeshStandardMaterial({
+    color: '#2c3538',
+    roughness: 0.62,
+    metalness: 0.3,
+    flatShading: true,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({ color: '#3b281c', roughness: 0.82 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: '#ffe8ad',
+    emissive: '#f59e0b',
+    emissiveIntensity: 0.62,
+    roughness: 0.16,
+    metalness: 0.18,
+  });
+  const stoneMat = new THREE.MeshStandardMaterial({
+    color: '#8b887e',
+    roughness: 0.94,
+    flatShading: true,
+  });
+
+  // Elevated cedar foundation deck (wraps out to a mountain view porch in front)
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.45, 9.6), deckMat);
+  deck.position.set(0, 0.225, 0.7);
+  deck.castShadow = true;
+  deck.receiveShadow = true;
+  g.add(deck);
+
+  // Steep iconic triangular A-frame body (interior wood gable walls)
+  const bodyShape = new THREE.Shape();
+  bodyShape.moveTo(-3.8, 0);
+  bodyShape.lineTo(0, 6.9);
+  bodyShape.lineTo(3.8, 0);
+  bodyShape.closePath();
+  const bodyGeo = new THREE.ExtrudeGeometry(bodyShape, { depth: 7.0, bevelEnabled: false });
+  bodyGeo.translate(0, 0, -3.5);
+  const body = new THREE.Mesh(bodyGeo, timberMat);
+  body.position.y = 0.45;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+
+  // Steep overhanging dark charcoal metal A-roof slopes reaching all the way to the deck
+  const slopeLen = Math.hypot(4.25, 7.35);
+  const slopeAngle = Math.atan2(7.35, 4.25);
+  for (const side of [-1, 1]) {
+    const roofPanel = new THREE.Mesh(new THREE.BoxGeometry(slopeLen, 0.24, 8.2), roofMat);
+    roofPanel.position.set(side * 2.12, 0.45 + 3.68, 0);
+    roofPanel.rotation.z = -side * slopeAngle;
+    roofPanel.castShadow = true;
+    roofPanel.receiveShadow = true;
+    g.add(roofPanel);
+  }
+
+  // Metal ridge cap
+  const ridgeCap = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.28, 8.3), roofMat);
+  ridgeCap.position.set(0, 0.45 + 7.28, 0);
+  g.add(ridgeCap);
+
+  // Signature A-frame floor-to-peak warm glowing glass gable window (front & upper back)
+  const triGlassShape = new THREE.Shape();
+  triGlassShape.moveTo(-2.55, 0);
+  triGlassShape.lineTo(0, 4.75);
+  triGlassShape.lineTo(2.55, 0);
+  triGlassShape.closePath();
+  const triGlassGeo = new THREE.ShapeGeometry(triGlassShape);
+  const frontGlass = new THREE.Mesh(triGlassGeo, glassMat);
+  frontGlass.position.set(0, 1.55, 3.53);
+  g.add(frontGlass);
+
+  const backGlass = new THREE.Mesh(triGlassGeo, glassMat);
+  backGlass.position.set(0, 1.55, -3.53);
+  backGlass.rotation.y = Math.PI;
+  g.add(backGlass);
+
+  // Heavy dark timber mullions across the glass facade
+  for (const zSign of [1, -1]) {
+    const zPos = zSign * 3.56;
+    const centerMullion = new THREE.Mesh(new THREE.BoxGeometry(0.16, 4.85, 0.14), trimMat);
+    centerMullion.position.set(0, 3.95, zPos);
+    g.add(centerMullion);
+
+    const midBar = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.16, 0.14), trimMat);
+    midBar.position.set(0, 2.9, zPos);
+    g.add(midBar);
+
+    const upperBar = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.14, 0.14), trimMat);
+    upperBar.position.set(0, 4.5, zPos);
+    g.add(upperBar);
+  }
+
+  // Timber entry door below the front glass
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.15, 2.05, 0.16), trimMat);
+  door.position.set(0, 1.48, 3.54);
+  g.add(door);
+
+  // Front deck railings
+  for (const px of [-3.7, -1.85, 1.85, 3.7]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.0, 0.16), trimMat);
+    post.position.set(px, 0.95, 5.25);
+    post.castShadow = true;
+    g.add(post);
+  }
+  const leftRail = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.1, 0.12), trimMat);
+  leftRail.position.set(-2.75, 1.38, 5.25);
+  g.add(leftRail);
+  const rightRail = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.1, 0.12), trimMat);
+  rightRail.position.set(2.75, 1.38, 5.25);
+  g.add(rightRail);
+
+  // Tall Rockies river-stone chimney rising alongside the roof slope
+  const chimney = new THREE.Mesh(new THREE.BoxGeometry(1.15, 7.6, 1.25), stoneMat);
+  chimney.position.set(2.65, 3.85, -1.6);
+  chimney.castShadow = true;
+  g.add(chimney);
 
   return g;
 }
@@ -683,6 +843,9 @@ function buildHazardMesh(h: HazardSpec): THREE.Group {
     case 'cabin':
       g = buildCabin();
       break;
+    case 'aframe':
+      g = buildAFrame();
+      break;
     case 'house':
       g = buildCoastalHouse();
       break;
@@ -769,6 +932,51 @@ function buildSwordFernGeometry(): THREE.BufferGeometry {
   return geo;
 }
 
+function buildBunchgrassGeometry(): THREE.BufferGeometry {
+  // 11 slender upright-arching dry bunchgrass blades (East Kootenay bluebunch wheatgrass & fescue)
+  const bladeCount = 11;
+  const segs = 3;
+  const positions: number[] = [];
+  const normals: number[] = [];
+
+  for (let f = 0; f < bladeCount; f++) {
+    const yaw = (f / bladeCount) * Math.PI * 2 + (f % 3) * 0.19;
+    const cosY = Math.cos(yaw);
+    const sinY = Math.sin(yaw);
+    const leanR = 0.28 + (f % 4) * 0.12;
+    const bladeH = 0.48 + (f % 3) * 0.16;
+    const baseOff = 0.08 + (f % 2) * 0.07;
+
+    const pt = (t: number, side: number) => {
+      const r = baseOff + t * t * leanR;
+      const y = t * bladeH - t * t * 0.08;
+      const halfW = (1 - t * 0.88) * 0.048;
+      const lx = r;
+      const lz = side * halfW;
+      return [lx * cosY - lz * sinY, y, lx * sinY + lz * cosY];
+    };
+
+    for (let s = 0; s < segs; s++) {
+      const t0 = s / segs;
+      const t1 = (s + 1) / segs;
+      const p0L = pt(t0, -1);
+      const p0R = pt(t0, 1);
+      const p1L = pt(t1, -1);
+      const p1R = pt(t1, 1);
+
+      positions.push(...p0L, ...p1L, ...p1R);
+      positions.push(...p0L, ...p1R, ...p0R);
+      for (let k = 0; k < 6; k++) normals.push(0, 1, 0);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
 export function buildEnvironment(
   scene: THREE.Scene,
   contract: ContractSpec
@@ -777,10 +985,11 @@ export function buildEnvironment(
   const rand = makeRng(contract.index * 7919 + 1337);
   const windAnimatedMeshes: THREE.Object3D[] = [];
 
-  // 1. Sky Dome + Coastal Fog
+  // 1. Sky Dome + Regional Fog (crisp dry air in the Rockies so distant peaks read clearly)
   const { skyMesh, sunDir, fogColor, fogDensity } = createSkyDome(contract.weather);
   group.add(skyMesh);
-  scene.fog = new THREE.FogExp2(fogColor, fogDensity * 0.88);
+  const fogScale = contract.site === 'kootenay_rockies' ? 0.56 : 0.88;
+  scene.fog = new THREE.FogExp2(fogColor, fogDensity * fogScale);
   scene.background = new THREE.Color(fogColor);
 
   // 2. Lighting Setup (Crisp Pacific Northwest sun + lush mossy bounce + sky fill)
@@ -834,7 +1043,9 @@ export function buildEnvironment(
             ? 'suburban'
             : contract.site === 'pacific_headland'
               ? 'headland'
-              : 'bluff';
+              : contract.site === 'kootenay_rockies'
+                ? 'kootenay'
+                : 'bluff';
 
   const terrainGeo = new THREE.PlaneGeometry(240, 240, 96, 96);
   terrainGeo.rotateX(-Math.PI / 2);
@@ -1018,6 +1229,141 @@ export function buildEnvironment(
     bench.position.set(17.5, 0, 15.5);
     bench.rotation.y = -0.68;
     group.add(bench);
+  } else if (contract.site === 'kootenay_rockies') {
+    // 1) Distant Rocky Mountain Panorama: serrated limestone/granite peaks with snow-dusted ridges!
+    const rockPeakMat = new THREE.MeshStandardMaterial({
+      color: '#6b7785',
+      roughness: 0.94,
+      metalness: 0.02,
+      flatShading: true,
+    });
+    const farPeakMat = new THREE.MeshStandardMaterial({
+      color: '#7d8fa2',
+      roughness: 0.95,
+      metalness: 0.02,
+      flatShading: true,
+    });
+    const snowCapMat = new THREE.MeshStandardMaterial({
+      color: '#edf4f9',
+      roughness: 0.82,
+      metalness: 0.04,
+      flatShading: true,
+    });
+
+    const mountainArc: Array<{
+      angle: number;
+      dist: number;
+      radius: number;
+      height: number;
+      snow: boolean;
+      far?: boolean;
+    }> = [
+      // Dramatic main East Kootenay Rockies wall along the northern & eastern skyline
+      { angle: -2.85, dist: 162, radius: 42, height: 82, snow: true },
+      { angle: -2.42, dist: 168, radius: 48, height: 96, snow: true, far: true },
+      { angle: -2.02, dist: 158, radius: 44, height: 88, snow: true },
+      { angle: -1.62, dist: 172, radius: 52, height: 112, snow: true, far: true },
+      { angle: -1.22, dist: 160, radius: 46, height: 98, snow: true },
+      { angle: -0.82, dist: 170, radius: 50, height: 106, snow: true, far: true },
+      { angle: -0.42, dist: 158, radius: 42, height: 84, snow: true },
+      { angle: 0.0, dist: 166, radius: 44, height: 78, snow: true, far: true },
+      // Purcell range across the southern & western horizon so distant peaks crown every vista
+      { angle: 0.48, dist: 164, radius: 46, height: 74, snow: true },
+      { angle: 1.0, dist: 170, radius: 48, height: 82, snow: true, far: true },
+      { angle: 1.55, dist: 162, radius: 44, height: 70, snow: true },
+      { angle: 2.12, dist: 168, radius: 46, height: 78, snow: true, far: true },
+      { angle: 2.65, dist: 160, radius: 42, height: 72, snow: true },
+    ];
+
+    for (const pk of mountainArc) {
+      const mtnGroup = new THREE.Group();
+      const baseGeo = new THREE.ConeGeometry(pk.radius, pk.height, 7);
+      // Perturb cone vertices subtly for craggy Rockies limestone strata & ridges
+      const pos = baseGeo.attributes.position;
+      for (let v = 0; v < pos.count; v++) {
+        const vx = pos.getX(v);
+        const vy = pos.getY(v);
+        const vz = pos.getZ(v);
+        const hNorm = (vy + pk.height * 0.5) / pk.height;
+        if (hNorm < 0.96) {
+          const crag = 0.82 + Math.sin(vx * 0.17 + pk.angle * 5) * 0.16 + Math.cos(vz * 0.14) * 0.12;
+          pos.setXYZ(v, vx * crag, vy, vz * crag);
+        }
+      }
+      baseGeo.computeVertexNormals();
+      const peakMesh = new THREE.Mesh(baseGeo, pk.far ? farPeakMat : rockPeakMat);
+      peakMesh.position.y = pk.height * 0.5 - 8;
+      mtnGroup.add(peakMesh);
+
+      if (pk.snow) {
+        const capH = pk.height * 0.36;
+        const capR = pk.radius * 0.37;
+        const capGeo = new THREE.ConeGeometry(capR, capH, 7);
+        const capMesh = new THREE.Mesh(capGeo, snowCapMat);
+        capMesh.position.y = pk.height - capH * 0.5 - 7.4;
+        mtnGroup.add(capMesh);
+      }
+
+      // Secondary shoulder spur for natural alpine ridgeline silhouette
+      const spurGeo = new THREE.ConeGeometry(pk.radius * 0.65, pk.height * 0.62, 6);
+      const spur = new THREE.Mesh(spurGeo, pk.far ? farPeakMat : rockPeakMat);
+      spur.position.set(pk.radius * 0.42, pk.height * 0.31 - 9, pk.radius * 0.18);
+      mtnGroup.add(spur);
+
+      mtnGroup.position.set(Math.cos(pk.angle) * pk.dist, 0, Math.sin(pk.angle) * pk.dist);
+      mtnGroup.rotation.y = pk.angle + 0.4;
+      group.add(mtnGroup);
+    }
+
+    // 2) Dusty ochre gravel mountain cabin track winding across the bunchgrass bench
+    const trackMat = new THREE.MeshStandardMaterial({
+      color: '#b09a74',
+      roughness: 0.96,
+    });
+    const trackPts = [
+      new THREE.Vector2(-24, 15.5),
+      new THREE.Vector2(-10, 14.5),
+      new THREE.Vector2(4, 16.0),
+      new THREE.Vector2(18, 12.5),
+      new THREE.Vector2(28, 4.5),
+    ];
+    for (let i = 0; i < trackPts.length - 1; i++) {
+      const a = trackPts[i];
+      const b = trackPts[i + 1];
+      const len = a.distanceTo(b);
+      const seg = new THREE.Mesh(new THREE.PlaneGeometry(len + 1.0, 2.8), trackMat);
+      seg.rotation.x = -Math.PI / 2;
+      seg.rotation.z = -Math.atan2(b.y - a.y, b.x - a.x);
+      seg.position.set((a.x + b.x) * 0.5, 0.03, (a.y + b.y) * 0.5);
+      seg.receiveShadow = true;
+      group.add(seg);
+    }
+
+    // 3) Pale sun-warmed Rockies limestone outcrops along the rolling foothill benches
+    const outcropGeo = new THREE.DodecahedronGeometry(1.9, 1);
+    const outcropMat = new THREE.MeshStandardMaterial({
+      color: '#a39e90',
+      roughness: 0.93,
+      flatShading: true,
+    });
+    const outcropSpots: Array<[number, number, number, number]> = [
+      [-23.5, -16.5, 1.9, 1.0],
+      [22.5, -14.5, 2.1, 1.15],
+      [25.0, 9.5, 1.7, 0.85],
+      [-21.5, 21.0, 2.0, 1.0],
+      [8.5, -24.0, 2.3, 1.2],
+      [-6.5, 26.5, 1.8, 0.9],
+    ];
+    for (const [ox, oz, sx, sy] of outcropSpots) {
+      const rock = new THREE.Mesh(outcropGeo, outcropMat);
+      const oy = getTerrainHeight(ox, oz, contract.site);
+      rock.position.set(ox, oy + sy * 0.42, oz);
+      rock.scale.set(sx, sy, sx * (0.75 + rand() * 0.4));
+      rock.rotation.set((rand() - 0.5) * 0.22, rand() * Math.PI * 2, (rand() - 0.5) * 0.22);
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      group.add(rock);
+    }
   } else if (contract.site === 'coastal_town') {
     // 1) Coastal Town Asphalt Street running East-West along the front of the yards
     const roadMat = new THREE.MeshStandardMaterial({
@@ -1094,10 +1440,17 @@ export function buildEnvironment(
   const hazardGroups = new Map<string, THREE.Group>();
   const hazardWarningRings: THREE.Mesh[] = [];
 
+  const sceneOccluders: SceneOccluder[] = [];
+
   for (const h of contract.hazards) {
     const hGroup = buildHazardMesh(h);
     group.add(hGroup);
     hazardGroups.set(h.id, hGroup);
+    sceneOccluders.push({
+      rootGroup: hGroup,
+      occlusionFade: 1,
+      occlusionMaterials: collectOcclusionMaterials(hGroup),
+    });
 
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(Math.max(1.2, h.radius - 0.22), h.radius + 0.08, 32),
@@ -1114,9 +1467,10 @@ export function buildEnvironment(
     hazardWarningRings.push(ring);
   }
 
-  // 6. Instanced Lush Multi-Frond PNW Sword Ferns across clearing edges & forest floor
-  const fernCount = 260;
-  const fernFrondGeo = buildSwordFernGeometry();
+  // 6. Instanced Ground Undergrowth (Dry Bunchgrass in Kootenay Rockies, Sword Ferns on the coast)
+  const fernCount = contract.site === 'kootenay_rockies' ? 320 : 260;
+  const fernFrondGeo =
+    contract.site === 'kootenay_rockies' ? buildBunchgrassGeometry() : buildSwordFernGeometry();
   const fernMat = new THREE.MeshStandardMaterial({
     color: '#ffffff', // white base so instanceColor isn't double-darkened!
     roughness: 0.82,
@@ -1159,7 +1513,16 @@ export function buildEnvironment(
     dummy.updateMatrix();
     fernInst.setMatrixAt(fIdx, dummy.matrix);
 
-    fernColor.setHSL(0.30 + (rand() - 0.5) * 0.05, 0.48 + rand() * 0.14, 0.20 + rand() * 0.10);
+    if (contract.site === 'kootenay_rockies') {
+      // Sun-cured golden bunchgrass & dry interior sage tufts
+      if (rand() > 0.32) {
+        fernColor.setHSL(0.12 + (rand() - 0.5) * 0.035, 0.36 + rand() * 0.14, 0.34 + rand() * 0.11);
+      } else {
+        fernColor.setHSL(0.24 + (rand() - 0.5) * 0.04, 0.18 + rand() * 0.1, 0.3 + rand() * 0.08);
+      }
+    } else {
+      fernColor.setHSL(0.30 + (rand() - 0.5) * 0.05, 0.48 + rand() * 0.14, 0.20 + rand() * 0.10);
+    }
     fernInst.setColorAt(fIdx, fernColor);
     fIdx++;
   }
@@ -1174,7 +1537,10 @@ export function buildEnvironment(
   flowerGeo.translate(0, 0.22, 0);
   const flowerMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.75, flatShading: true });
   const flowerInst = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
-  const flowerPalette = ['#e9d5ff', '#fef08a', '#f5f5f4', '#c4b5fd', '#fde68a'];
+  const flowerPalette =
+    contract.site === 'kootenay_rockies'
+      ? ['#facc15', '#fde047', '#eab308', '#c4b5fd', '#fef08a'] // arrowleaf balsamroot & mountain lupine
+      : ['#e9d5ff', '#fef08a', '#f5f5f4', '#c4b5fd', '#fde68a'];
   let flIdx = 0;
   for (let tries = 0; tries < 240 && flIdx < flowerCount; tries++) {
     const a = rand() * Math.PI * 2;
@@ -1201,10 +1567,10 @@ export function buildEnvironment(
   if (flowerInst.instanceColor) flowerInst.instanceColor.needsUpdate = true;
   group.add(flowerInst);
 
-  // 7. Mossy Coastal Boulders
+  // 7. Regional Boulders (pale Rockies limestone in Kootenays, mossy granite on the coast)
   const rockGeo = new THREE.DodecahedronGeometry(1.0, 0);
   const rockMat = new THREE.MeshStandardMaterial({
-    color: '#677067',
+    color: contract.site === 'kootenay_rockies' ? '#9c9789' : '#677067',
     roughness: 0.95,
     flatShading: true,
   });
@@ -1295,7 +1661,7 @@ export function buildEnvironment(
     };
   };
 
-  const bgTreeCount = 195;
+  const bgTreeCount = contract.site === 'kootenay_rockies' ? 115 : 195;
   const bgTrunkGeo = new THREE.CylinderGeometry(0.18, 0.45, 11, 6);
   bgTrunkGeo.translate(0, 5.5, 0);
   const bgTrunkMat = new THREE.MeshStandardMaterial({ color: '#453022', roughness: 0.95 });
@@ -1335,11 +1701,18 @@ export function buildEnvironment(
   let tPlaced = 0;
   for (let i = 0; i < bgTreeCount * 2 && tPlaced < bgTreeCount; i++) {
     const angle = rand() * Math.PI * 2;
-    // Leave scenic ocean overlook gap on storm_bluff and pacific_headland
+    // Leave scenic ocean overlook gap on storm_bluff/pacific_headland and open mountain vistas in the Kootenays
     if (contract.site === 'storm_bluff' && angle > 0.25 && angle < 1.35) continue;
     if (contract.site === 'pacific_headland' && angle > 0.15 && angle < 1.55) continue;
+    if (contract.site === 'kootenay_rockies' && angle > -1.75 && angle < -0.35 && rand() < 0.72) continue;
 
-    const dist = (contract.site === 'coastal_town' ? 36 : 25) + rand() * 68;
+    const dist =
+      (contract.site === 'coastal_town'
+        ? 36
+        : contract.site === 'kootenay_rockies'
+          ? 30
+          : 25) +
+      rand() * 68;
     const tx = Math.cos(angle) * dist;
     const tz = Math.sin(angle) * dist;
     // Keep the town street corridor clear of backdrop forest trunks
@@ -1369,8 +1742,23 @@ export function buildEnvironment(
       fade: 1,
     });
 
-    // Rich PNW forest color variation (Douglas fir emerald, Sitka spruce teal, cedar olive)
-    col.setHSL(0.35 + (rand() - 0.5) * 0.08, 0.36 + rand() * 0.14, 0.22 + rand() * 0.11);
+    // Regional forest color variation
+    if (contract.site === 'kootenay_rockies') {
+      const rCol = rand();
+      if (rCol < 0.24) {
+        // Golden autumn Western Larch accents scattered across the foothills!
+        col.setHSL(0.12 + (rand() - 0.5) * 0.03, 0.65 + rand() * 0.15, 0.42 + rand() * 0.1);
+      } else if (rCol < 0.42) {
+        // Silvery Blue Spruce / interior pine hue
+        col.setHSL(0.49 + (rand() - 0.5) * 0.06, 0.28 + rand() * 0.12, 0.30 + rand() * 0.1);
+      } else {
+        // Sun-warmed Ponderosa Pine & interior Douglas Fir greens
+        col.setHSL(0.29 + (rand() - 0.5) * 0.07, 0.34 + rand() * 0.14, 0.24 + rand() * 0.11);
+      }
+    } else {
+      // Rich PNW forest color variation (Douglas fir emerald, Sitka spruce teal, cedar olive)
+      col.setHSL(0.35 + (rand() - 0.5) * 0.08, 0.36 + rand() * 0.14, 0.22 + rand() * 0.11);
+    }
     bgFol1.setColorAt(tPlaced, col);
     bgFol2.setColorAt(tPlaced, col);
     bgFol3.setColorAt(tPlaced, col);
@@ -1456,6 +1844,7 @@ export function buildEnvironment(
     group,
     hazardGroups,
     hazardWarningRings,
+    sceneOccluders,
     waterMesh,
     sunLight,
     hemiLight,

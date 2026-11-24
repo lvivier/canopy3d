@@ -14,6 +14,12 @@ import { buildEnvironment, BuiltEnvironment } from '../graphics/EnvironmentBuild
 import { buildTreeRuntime, recomputeTreeLean, syncTrunkCutVisuals } from '../graphics/TreeGenerator';
 import { CameraController, CameraKeyframe } from './CameraController';
 import { ParticleSystem } from './ParticleSystem';
+import {
+  cameraOrbitZoomHint,
+  introSkipHint,
+  localizeControlCopy,
+  orbitOnlyHint,
+} from '../ui/inputHints';
 
 type HUDListener = (state: GameHUDState) => void;
 
@@ -80,6 +86,19 @@ export class GameEngine {
   private toastCounter = 0;
   private currentToast: GameHUDState['toast'] = undefined;
   private toastExpireAt = 0;
+
+  // Animated 3-blow ("tok-tok-tok") ghostly orange felling wedge insertion
+  private activeWedgeAnim: {
+    tree: TreeRuntime;
+    wedgeIndex: number;
+    elapsed: number;
+    blowsFired: number;
+    startDist: number;
+    endDist: number;
+    currentProgress: number;
+    targetProgress: number;
+    flashIntensity: number;
+  } | null = null;
 
   // Persistent progression
   private completedContracts: Record<string, { stars: number; score: number; earnings: number }> = {};
@@ -263,6 +282,7 @@ export class GameEngine {
     this.cuttingBuck = null;
     this.cuttingTopCut = null;
     this.cuttingTrunkStage = 'none';
+    this.activeWedgeAnim = null;
     this.audio.setSawActive('none');
     this.cameraCtrl.cancelIntro(false);
   }
@@ -270,6 +290,8 @@ export class GameEngine {
   public openScreen(screen: GameHUDState['screen']): void {
     this.audio.init();
     this.audio.playClick();
+    this.audio.setSawActive('none');
+    this.audio.setChainsawSelected(false);
     this.cameraCtrl.cancelIntro(false);
     this.screen = screen;
     if (screen === 'title') {
@@ -316,7 +338,7 @@ export class GameEngine {
       this.playContractIntro();
     }
 
-    this.showToast(`Contract Started: ${contract.title}`, 'info');
+    this.showToast(`Job Started: ${contract.title}`, 'info');
     this.emitHUD();
   }
 
@@ -498,23 +520,104 @@ export class GameEngine {
       if (Math.abs(snapped - tree.occlusionFade) < 0.001) continue;
       tree.occlusionFade = snapped;
 
-      for (const entry of tree.occlusionMaterials) {
-        if (snapped >= 0.995) {
-          const nextTransparent = entry.baseOpacity < 0.999;
-          entry.mat.opacity = entry.baseOpacity;
-          entry.mat.depthWrite = true;
-          if (entry.mat.transparent !== nextTransparent) {
-            entry.mat.transparent = nextTransparent;
-            // Required in Three.js so #define OPAQUE is recompiled on transparent state transitions
-            entry.mat.needsUpdate = true;
+      this.applyOcclusionMaterials(tree.occlusionMaterials, snapped);
+    }
+  }
+
+  /**
+   * Fade buildings / hazards between the camera and the working tree (same corridor test as trees).
+   */
+  private updateSceneStructureOcclusion(
+    cameraPos: THREE.Vector3,
+    targetPos: THREE.Vector3,
+    dt: number
+  ): void {
+    const occluders = this.env?.sceneOccluders;
+    if (!occluders?.length || this.screen !== 'playing' || !this.getActiveTree()) return;
+
+    const dx = targetPos.x - cameraPos.x;
+    const dy = targetPos.y - cameraPos.y;
+    const dz = targetPos.z - cameraPos.z;
+    const horizLenSq = dx * dx + dz * dz;
+    const invHorizLenSq = horizLenSq > 0.001 ? 1 / horizLenSq : 0;
+    const lerpRate = Math.min(1, 8.5 * dt);
+    const minFade = 0.1;
+
+    for (const occ of occluders) {
+      let targetFade = 1;
+      this._occBox.setFromObject(occ.rootGroup);
+      if (this._occBox.isEmpty()) continue;
+
+      this._occBox.getCenter(this._occCenter);
+      this._occBox.getSize(this._occSize);
+      const rMax = Math.max(this._occSize.x, this._occSize.z) * 0.58;
+      const yMin = this._occBox.min.y - 1.2;
+      const yMax = this._occBox.max.y + 2.5;
+
+      const camHoriz = Math.hypot(this._occCenter.x - cameraPos.x, this._occCenter.z - cameraPos.z);
+      const nearPad = rMax + 6.5;
+      if (camHoriz < nearPad + 2.5 && cameraPos.y >= yMin - 1 && cameraPos.y <= yMax + 3) {
+        const nearFactor = THREE.MathUtils.clamp((camHoriz - (rMax * 0.4 + 1.0)) / 5.0, minFade, 1);
+        targetFade = Math.min(targetFade, nearFactor);
+      }
+
+      if (this._occBox.distanceToPoint(cameraPos) < 7.5) {
+        const d = this._occBox.distanceToPoint(cameraPos);
+        targetFade = Math.min(targetFade, THREE.MathUtils.clamp(d / 7.5, minFade, 1));
+      }
+
+      if (invHorizLenSq > 0) {
+        const uRaw =
+          ((this._occCenter.x - cameraPos.x) * dx + (this._occCenter.z - cameraPos.z) * dz) * invHorizLenSq;
+        if (uRaw > -0.18 && uRaw < 1.02) {
+          const u = THREE.MathUtils.clamp(uRaw, 0, 1);
+          const px = cameraPos.x + dx * u;
+          const py = cameraPos.y + dy * u;
+          const pz = cameraPos.z + dz * u;
+
+          if (py >= yMin && py <= yMax + 1.5) {
+            const perpDist = Math.hypot(this._occCenter.x - px, this._occCenter.z - pz);
+            const clearRadius = rMax * 0.9 + 2.0 + (1 - u) * 3.2;
+            const softBand = 5.0;
+            if (perpDist < clearRadius + softBand) {
+              const sightFactor = THREE.MathUtils.clamp(
+                (perpDist - clearRadius) / softBand,
+                minFade,
+                1
+              );
+              targetFade = Math.min(targetFade, sightFactor);
+            }
           }
-        } else {
-          entry.mat.opacity = entry.baseOpacity * snapped;
-          entry.mat.depthWrite = snapped > 0.72;
-          if (!entry.mat.transparent) {
-            entry.mat.transparent = true;
-            entry.mat.needsUpdate = true;
-          }
+        }
+      }
+
+      const nextFade = occ.occlusionFade + (targetFade - occ.occlusionFade) * lerpRate;
+      const snapped = Math.abs(nextFade - targetFade) < 0.004 ? targetFade : nextFade;
+      if (Math.abs(snapped - occ.occlusionFade) < 0.001) continue;
+      occ.occlusionFade = snapped;
+      this.applyOcclusionMaterials(occ.occlusionMaterials, snapped);
+    }
+  }
+
+  private applyOcclusionMaterials(
+    occlusionMaterials: Array<{ mat: THREE.Material; baseOpacity: number }>,
+    snapped: number
+  ): void {
+    for (const entry of occlusionMaterials) {
+      if (snapped >= 0.995) {
+        const nextTransparent = entry.baseOpacity < 0.999;
+        entry.mat.opacity = entry.baseOpacity;
+        entry.mat.depthWrite = true;
+        if (entry.mat.transparent !== nextTransparent) {
+          entry.mat.transparent = nextTransparent;
+          entry.mat.needsUpdate = true;
+        }
+      } else {
+        entry.mat.opacity = entry.baseOpacity * snapped;
+        entry.mat.depthWrite = snapped > 0.72;
+        if (!entry.mat.transparent) {
+          entry.mat.transparent = true;
+          entry.mat.needsUpdate = true;
         }
       }
     }
@@ -584,6 +687,7 @@ export class GameEngine {
     for (const hz of hazards) {
       if (
         hz.type !== 'cabin' &&
+        hz.type !== 'aframe' &&
         hz.type !== 'house' &&
         hz.type !== 'barn' &&
         hz.type !== 'shed' &&
@@ -598,7 +702,9 @@ export class GameEngine {
       const perp = Math.abs(rx * -dirZ + rz * dirX);
       const clearMargin = hz.radius + 2.4;
       const tallWeight =
-        hz.type === 'cabin' || hz.type === 'house' || hz.type === 'barn' ? 14 : 6;
+        hz.type === 'cabin' || hz.type === 'aframe' || hz.type === 'house' || hz.type === 'barn'
+          ? 14
+          : 6;
 
       if (proj > 1.0 && proj < camHoriz + hz.radius && perp < clearMargin) {
         penalty += tallWeight * (1 - perp / clearMargin);
@@ -983,6 +1089,13 @@ export class GameEngine {
   }
 
   private bindInputEvents(): void {
+    this.cameraCtrl.setMultiTouchBeginListener(() => {
+      if (this.isLeftDown) {
+        this.isLeftDown = false;
+        this.handlePrimaryUp();
+      }
+    });
+
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
@@ -1002,6 +1115,7 @@ export class GameEngine {
 
     this.canvas.addEventListener('pointerdown', (e) => {
       if (this.screen !== 'playing') return;
+      if (e.pointerType === 'touch' && this.cameraCtrl.getActiveTouchCount() >= 2) return;
       if (e.button !== 0 || e.shiftKey) return;
       this.audio.init();
       this.updatePointerCoords(e);
@@ -1230,7 +1344,7 @@ export class GameEngine {
           this.focusCameraForCurrentState(false);
           this.emitHUD();
         }
-        this.audio.setSawActive('chainsaw', 1.12);
+        this.audio.setSawActive('chainsaw', 1.12, topHit.tree.speciesSpec.woodDensity);
         return;
       }
 
@@ -1264,14 +1378,14 @@ export class GameEngine {
       if (activeTree.stage === 'aimed') {
         // Start sawing the Face Notch!
         this.cuttingTrunkStage = 'notch';
-        this.audio.setSawActive('chainsaw', 1.0);
+        this.audio.setSawActive('chainsaw', 1.0, activeTree.speciesSpec.woodDensity);
         return;
       }
 
       if (activeTree.stage === 'notched' || activeTree.stage === 'hinge_ready') {
         // Start sawing the Back Cut!
         this.cuttingTrunkStage = 'backcut';
-        this.audio.setSawActive('chainsaw', 1.15);
+        this.audio.setSawActive('chainsaw', 1.15, activeTree.speciesSpec.woodDensity);
         return;
       }
       return;
@@ -1305,7 +1419,7 @@ export class GameEngine {
           this.focusCameraForCurrentState(false);
           this.emitHUD();
         }
-        this.audio.setSawActive('chainsaw', 1.12);
+        this.audio.setSawActive('electric_buck', 1.12);
         return;
       }
       // Directly hovered clear sawlog ring
@@ -1316,7 +1430,7 @@ export class GameEngine {
           this.focusCameraForCurrentState(false);
           this.emitHUD();
         }
-        this.audio.setSawActive('chainsaw', 1.1);
+        this.audio.setSawActive('electric_buck', 1.1);
         return;
       }
       // Directly hovered fallen branch/crown bough -> zip it off to limb the log!
@@ -1329,7 +1443,7 @@ export class GameEngine {
             this.focusCameraForCurrentState(false);
             this.emitHUD();
           }
-          this.audio.setSawActive('chainsaw', 1.15);
+          this.audio.setSawActive('electric_buck', 1.15);
           return;
         }
       }
@@ -1346,11 +1460,11 @@ export class GameEngine {
             const blockers = this.getObstructingLimbsForRing(t, r);
             if (blockers.length === 0) {
               this.cuttingBuck = { tree: t, ring: r };
-              this.audio.setSawActive('chainsaw', 1.1);
+              this.audio.setSawActive('electric_buck', 1.1);
             } else {
               this.cuttingBranch = blockers[0];
               this.activeTreeId = t.spec.id;
-              this.audio.setSawActive('chainsaw', 1.15);
+              this.audio.setSawActive('electric_buck', 1.15);
             }
             return;
           }
@@ -1399,72 +1513,163 @@ export class GameEngine {
     }
   }
 
-  private positionTrunkCutsForAim(tree: TreeRuntime): void {
+  private placeWedgeAtDist(tree: TreeRuntime, wedgeIdx: number, distAlongAim: number): void {
+    const wm = tree.wedgeMeshes[wedgeIdx];
+    if (!wm) return;
     const yBack = tree.cutTopY + 0.07;
     const rotY = -tree.aimAngle;
     const cosR = Math.cos(rotY);
     const sinR = Math.sin(rotY);
+    const zOff = (wedgeIdx - 1) * tree.cutRadius * 0.52;
+    wm.position.set(
+      tree.cutCenterXZ.x + distAlongAim * cosR + zOff * sinR,
+      yBack,
+      tree.cutCenterXZ.y - distAlongAim * sinR + zOff * cosR
+    );
+    wm.rotation.set(0, rotY, 0.05);
+  }
+
+  private getWedgeRange(tree: TreeRuntime, wedgeIdx: number): { startDist: number; endDist: number } {
+    const wm = tree.wedgeMeshes[wedgeIdx];
+    const wedgeLen = (wm?.userData?.wedgeLen as number | undefined) ?? Math.max(0.48, tree.baseRadius * 1.12);
+    return {
+      startDist: -(tree.cutRadius + wedgeLen * 0.56),
+      endDist: -(tree.cutRadius - wedgeLen * 0.16),
+    };
+  }
+
+  private positionTrunkCutsForAim(tree: TreeRuntime): void {
     for (let w = 0; w < tree.wedgeMeshes.length; w++) {
-      const wm = tree.wedgeMeshes[w];
-      const zOff = (w - 1) * tree.cutRadius * 0.52;
-      const dist = -tree.cutRadius * 1.05;
-      wm.position.set(
-        tree.cutCenterXZ.x + dist * cosR + zOff * sinR,
-        yBack,
-        tree.cutCenterXZ.y - dist * sinR + zOff * cosR
-      );
-      wm.rotation.set(0, rotY, 0.08);
+      const { startDist, endDist } = this.getWedgeRange(tree, w);
+      this.placeWedgeAtDist(tree, w, w < tree.wedgesDriven ? endDist : startDist);
     }
     syncTrunkCutVisuals(tree);
   }
 
+  private fireWedgeHammerBlow(tree: TreeRuntime, blowIdx: number): void {
+    this.audio.playWedgeStrike(blowIdx);
+    this.cameraCtrl.triggerShake(0.08 + blowIdx * 0.04);
+
+    // Spawn crisp chips at back cut on each axe-head blow
+    const worldBack = new THREE.Vector3(
+      tree.spec.x - Math.cos(tree.aimAngle) * tree.baseRadius,
+      tree.cutHeight + tree.cutTopY + 0.07,
+      tree.spec.z - Math.sin(tree.aimAngle) * tree.baseRadius
+    );
+    this.particles.spawnSawdust(
+      worldBack,
+      new THREE.Vector3(-Math.cos(tree.aimAngle), 0.45, -Math.sin(tree.aimAngle)),
+      tree.speciesSpec.sapwoodColor,
+      6 + blowIdx * 3
+    );
+  }
+
   private driveWedge(tree: TreeRuntime): void {
+    if (this.activeWedgeAnim) return;
     if (tree.wedgesDriven >= 3) {
       this.showToast('Max wedges driven! Finish the back cut carefully to tip it.', 'info');
       return;
     }
 
     const idx = tree.wedgesDriven;
-    tree.wedgesDriven++;
+    const { startDist, endDist } = this.getWedgeRange(tree, idx);
     const wMesh = tree.wedgeMeshes[idx];
     if (wMesh) {
       wMesh.visible = true;
-      // Sink slightly inward toward trunk center
-      const dirToCenter = new THREE.Vector3(-wMesh.position.x, 0, -wMesh.position.z).normalize();
-      wMesh.position.addScaledVector(dirToCenter, tree.baseRadius * 0.25);
+      this.placeWedgeAtDist(tree, idx, startDist);
+      const mat = wMesh.material as THREE.MeshStandardMaterial;
+      mat.opacity = 0.72;
+      mat.emissive.set('#ff6a00');
+      mat.emissiveIntensity = 1.5;
     }
 
-    this.audio.playWedgeStrike();
-    this.cameraCtrl.triggerShake(0.14);
+    this.activeWedgeAnim = {
+      tree,
+      wedgeIndex: idx,
+      elapsed: 0,
+      blowsFired: 1,
+      startDist,
+      endDist,
+      currentProgress: 0,
+      targetProgress: 0.34,
+      flashIntensity: 1.0,
+    };
 
-    // Spawn crisp chips at back cut
-    const worldBack = new THREE.Vector3(
-      tree.spec.x - Math.cos(tree.aimAngle) * tree.baseRadius,
-      tree.cutHeight + 0.18,
-      tree.spec.z - Math.sin(tree.aimAngle) * tree.baseRadius
-    );
-    this.particles.spawnSawdust(
-      worldBack,
-      new THREE.Vector3(-Math.cos(tree.aimAngle), 0.5, -Math.sin(tree.aimAngle)),
-      tree.speciesSpec.sapwoodColor,
-      10
-    );
+    // First axe blow fires immediately on click/tap ("tok!")
+    this.fireWedgeHammerBlow(tree, 0);
+  }
 
-    // Check if wedge lift now overcomes back-lean!
-    if (tree.backCutDepth >= 0.72) {
-      const pull = this.computeForwardPull(tree);
-      if (pull >= -0.05) {
-        this.showToast('Wedge lifted the trunk over center — TIMBER!!', 'good');
-        this.initiateTreeFall(tree, false);
-        return;
-      } else {
-        this.showToast(`Wedge #${tree.wedgesDriven} driven! Tap another wedge to lift it further.`, 'info');
+  private updateWedgeAnimation(dt: number): void {
+    const anim = this.activeWedgeAnim;
+    if (!anim) return;
+
+    const { tree, wedgeIndex } = anim;
+    if (tree.stage === 'falling' || tree.stage === 'fallen' || tree.stage === 'bucked') {
+      this.activeWedgeAnim = null;
+      return;
+    }
+
+    anim.elapsed += dt;
+
+    // 3-blow cadence: 0.00s ("tok"), 0.25s ("tok"), 0.50s ("TOK!")
+    if (anim.blowsFired === 1 && anim.elapsed >= 0.25) {
+      anim.blowsFired = 2;
+      anim.targetProgress = 0.7;
+      anim.flashIntensity = 1.0;
+      this.fireWedgeHammerBlow(tree, 1);
+    } else if (anim.blowsFired === 2 && anim.elapsed >= 0.5) {
+      anim.blowsFired = 3;
+      anim.targetProgress = 1.0;
+      anim.flashIntensity = 1.15;
+      this.fireWedgeHammerBlow(tree, 2);
+    }
+
+    // Snappy hammered insertion motion on each blow
+    const snapLerp = Math.min(1, dt * 22);
+    anim.currentProgress += (anim.targetProgress - anim.currentProgress) * snapLerp;
+    anim.flashIntensity = Math.max(0, anim.flashIntensity - dt * 3.4);
+
+    const dist = THREE.MathUtils.lerp(anim.startDist, anim.endDist, anim.currentProgress);
+    this.placeWedgeAtDist(tree, wedgeIndex, dist);
+
+    const wMesh = tree.wedgeMeshes[wedgeIndex];
+    if (wMesh) {
+      wMesh.visible = true;
+      const mat = wMesh.material as THREE.MeshStandardMaterial;
+      // Ghostly glowing orange during insertion, solidifying into seated forestry orange
+      mat.opacity = THREE.MathUtils.lerp(0.68, 0.96, anim.currentProgress);
+      mat.emissive.set('#ff6a00');
+      mat.emissiveIntensity = 0.45 + anim.flashIntensity * 1.35;
+    }
+
+    // Complete sequence shortly after the 3rd blow drives the wedge home
+    if (anim.elapsed >= 0.72) {
+      this.placeWedgeAtDist(tree, wedgeIndex, anim.endDist);
+      if (wMesh) {
+        const mat = wMesh.material as THREE.MeshStandardMaterial;
+        mat.opacity = 1.0;
+        mat.emissiveIntensity = 0.2;
       }
-    } else {
-      this.showToast(`Wedge #${tree.wedgesDriven} set! Now continue the Back Cut to 82%.`, 'info');
-    }
 
-    this.emitHUD();
+      tree.wedgesDriven = Math.min(3, tree.wedgesDriven + 1);
+      this.activeWedgeAnim = null;
+
+      // Check if wedge lift now overcomes back-lean!
+      if (tree.backCutDepth >= 0.72) {
+        const pull = this.computeForwardPull(tree);
+        if (pull >= -0.05) {
+          this.showToast('Wedge lifted the trunk over center — TIMBER!!', 'good');
+          this.initiateTreeFall(tree, false);
+          return;
+        } else {
+          this.showToast(`Wedge #${tree.wedgesDriven} driven! Tap another wedge to lift it further.`, 'info');
+        }
+      } else {
+        this.showToast(`Wedge #${tree.wedgesDriven} set! Now continue the Back Cut to 82%.`, 'info');
+      }
+
+      this.emitHUD();
+    }
   }
 
   private computeForwardPull(tree: TreeRuntime): number {
@@ -1800,7 +2005,7 @@ export class GameEngine {
 
   private showToast(text: string, tone: 'info' | 'good' | 'warn' | 'danger'): void {
     this.toastCounter++;
-    this.currentToast = { text, tone, id: this.toastCounter };
+    this.currentToast = { text: localizeControlCopy(text), tone, id: this.toastCounter };
     this.toastExpireAt = this.elapsed + 3.8;
     this.emitHUD();
   }
@@ -1823,7 +2028,10 @@ export class GameEngine {
         ? 2.85 / tree.speciesSpec.woodDensity
         : 0.95 / (tree.speciesSpec.woodDensity * (0.7 + b.radius * 2.2));
       b.cutProgress = Math.min(1, b.cutProgress + cutRate * dt);
-      this.audio.setSawActive(isGroundLimbing ? 'chainsaw' : 'prune', (isGroundLimbing ? 1.05 : 0.8) + b.cutProgress * 0.55);
+      this.audio.setSawActive(
+        isGroundLimbing ? 'electric_buck' : 'prune',
+        (isGroundLimbing ? 1.05 : 0.8) + b.cutProgress * 0.55
+      );
 
       // Sawdust spray right at branch collar!
       if (Math.random() < 0.65) {
@@ -1924,7 +2132,7 @@ export class GameEngine {
             const nextTree = this.trees.find((t) => t.spec.id === this.hoveredBranch?.treeId);
             if (nextTree?.stage === 'fallen') {
               this.cuttingBranch = this.hoveredBranch;
-              this.audio.setSawActive('chainsaw', 1.15);
+              this.audio.setSawActive('electric_buck', 1.15);
             }
           }
         }
@@ -1944,7 +2152,7 @@ export class GameEngine {
         activeTree.notchCutoutGroup.visible = true;
         syncTrunkCutVisuals(activeTree);
 
-        this.audio.setSawActive('chainsaw', 0.85 + activeTree.notchDepth * 1.1);
+        this.audio.setSawActive('chainsaw', 0.85 + activeTree.notchDepth * 1.1, density);
 
         if (Math.random() < 0.75) {
           const p = new THREE.Vector3(
@@ -1980,7 +2188,7 @@ export class GameEngine {
         activeTree.backCutGroup.visible = true;
         syncTrunkCutVisuals(activeTree);
 
-        this.audio.setSawActive('chainsaw', 1.05 + activeTree.backCutDepth * 0.6);
+        this.audio.setSawActive('chainsaw', 1.05 + activeTree.backCutDepth * 0.6, density);
 
         if (Math.random() < 0.75) {
           const p = new THREE.Vector3(
@@ -2062,7 +2270,11 @@ export class GameEngine {
       const { tree, cut } = this.cuttingTopCut;
       const rate = 0.92 / tree.speciesSpec.woodDensity;
       cut.cutProgress = Math.min(1, cut.cutProgress + rate * dt);
-      this.audio.setSawActive('chainsaw', 1.15);
+      this.audio.setSawActive(
+        this.activeTool === 'fell' ? 'chainsaw' : 'electric_buck',
+        1.15,
+        tree.speciesSpec.woodDensity
+      );
 
       const cutWorldPos = new THREE.Vector3();
       cut.ringMesh.getWorldPosition(cutWorldPos);
@@ -2174,7 +2386,7 @@ export class GameEngine {
       const { tree, ring } = this.cuttingBuck;
       const rate = 1.15 / tree.speciesSpec.woodDensity;
       ring.cutProgress = Math.min(1, ring.cutProgress + rate * dt);
-      this.audio.setSawActive('chainsaw', 1.15);
+      this.audio.setSawActive('electric_buck', 1.15);
 
       if (Math.random() < 0.7) {
         const wp = new THREE.Vector3();
@@ -2336,6 +2548,39 @@ export class GameEngine {
           0,
           -Math.cos(windAngle) * sway
         );
+
+        // Sync ghostly glowing orange wedge preview when Wedge tool is poised at the back cut
+        const showGhostWedge =
+          this.screen === 'playing' &&
+          isSelected &&
+          this.activeTool === 'wedge' &&
+          !this.activeWedgeAnim &&
+          (tree.stage === 'notched' || tree.stage === 'hinge_ready') &&
+          tree.backCutDepth >= 0.35;
+        for (let w = 0; w < tree.wedgeMeshes.length; w++) {
+          const isAnim =
+            this.activeWedgeAnim?.tree.spec.id === tree.spec.id &&
+            this.activeWedgeAnim.wedgeIndex === w;
+          if (isAnim) continue;
+
+          const wm = tree.wedgeMeshes[w];
+          const wMat = wm.material as THREE.MeshStandardMaterial;
+          if (w < tree.wedgesDriven) {
+            wm.visible = true;
+            wMat.opacity = 1.0;
+            wMat.emissiveIntensity = 0.2;
+          } else if (showGhostWedge && w === tree.wedgesDriven) {
+            const { startDist } = this.getWedgeRange(tree, w);
+            const breathe = Math.sin(this.elapsed * 5.0) * 0.045;
+            this.placeWedgeAtDist(tree, w, startDist + breathe);
+            wm.visible = true;
+            wMat.opacity = 0.5 + Math.sin(this.elapsed * 5.0) * 0.16;
+            wMat.emissive.set('#ff6a00');
+            wMat.emissiveIntensity = 1.05 + Math.sin(this.elapsed * 5.0) * 0.35;
+          } else {
+            wm.visible = false;
+          }
+        }
       }
 
       // Branch collar ring visual feedback (standing pruning vs fallen ground limbing!)
@@ -2600,12 +2845,12 @@ export class GameEngine {
 
     // Build dynamic one-line contextual mouse prompt
     let promptText = '';
-    let subPromptText = 'Right-Click Drag to Orbit · Scroll or pinch to Zoom';
+    let subPromptText = cameraOrbitZoomHint();
 
     if (tree && contract) {
       if (this.cameraCtrl.isIntroPlaying()) {
         promptText = `Site Survey · ${contract.title}`;
-        subPromptText = 'Click, scroll, or right-drag to skip intro';
+        subPromptText = introSkipHint();
       } else if (this.activeTool === 'prune') {
         const rem = Math.max(0, tree.spec.hazardBranches - tree.prunedTargetCount);
         if (rem > 0) {
@@ -2659,7 +2904,7 @@ export class GameEngine {
           if (blockers.length > 0) {
             promptText =
               'Hold Left-Click on green-ringed fallen boughs to limb the trunk, then slice the golden sawlog rings!';
-            subPromptText = `${blockers.length} fallen crown limb(s) covering buried sawlog cuts · Right-Click Drag to Orbit`;
+            subPromptText = `${blockers.length} fallen crown limb(s) covering buried sawlog cuts · ${orbitOnlyHint()}`;
           } else {
             promptText = 'Hover a golden ring on the fallen trunk & hold Left-Click to buck sawlogs!';
           }
@@ -2799,8 +3044,8 @@ export class GameEngine {
       activeTreeSpecies: tree?.speciesSpec ?? null,
       activeTreeStage: tree?.stage ?? null,
       activeTreeTask: tree?.spec.task ?? null,
-      promptText,
-      subPromptText,
+      promptText: localizeControlCopy(promptText),
+      subPromptText: localizeControlCopy(subPromptText),
       gauge,
       leanInfo,
       objectives,
@@ -2826,12 +3071,21 @@ export class GameEngine {
 
     this.cameraCtrl.setKeyboardEnabled(this.screen === 'playing');
     this.cameraCtrl.update(dt);
+    const chainsawIdling =
+      this.screen === 'playing' &&
+      this.activeTool === 'fell' &&
+      !this.cameraCtrl.isIntroPlaying() &&
+      !this.contractFinished;
+    this.audio.setChainsawSelected(chainsawIdling);
+    this.audio.update(dt);
     const camTarget = this.cameraCtrl.getTarget();
     this.env?.updateBackgroundOcclusion(this.camera.position, camTarget, dt);
     this.updatePlayableTreeOcclusion(this.camera.position, camTarget, dt);
+    this.updateSceneStructureOcclusion(this.camera.position, camTarget, dt);
 
     if (this.screen === 'playing') {
       this.updateCutting(dt);
+      this.updateWedgeAnimation(dt);
       this.updateFallingPhysics(dt);
       if (this.contractFinished && this.completionDelay > 0) {
         this.completionDelay -= dt;
