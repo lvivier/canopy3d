@@ -4,6 +4,7 @@ import {
   BuckRingData,
   ContractSpec,
   GameHUDState,
+  GraphicsQuality,
   StandingTopCutData,
   ToolId,
   TreeRuntime,
@@ -18,11 +19,15 @@ import {
 import { AudioEngine } from '../audio/AudioEngine';
 import { buildEnvironment, BuiltEnvironment } from '../graphics/EnvironmentBuilder';
 import { buildTreeRuntime, recomputeTreeLean, syncTrunkCutVisuals } from '../graphics/TreeGenerator';
+import { pbrAssets } from '../graphics/PbrAssetManager';
+import { PostPipeline } from '../graphics/PostPipeline';
+import { FoliageWindUniforms } from '../graphics/MaterialShaders';
 import { CameraController, CameraKeyframe } from './CameraController';
 import { ParticleSystem } from './ParticleSystem';
 import {
   cameraOrbitZoomHint,
   introSkipHint,
+  isTouchUi,
   localizeControlCopy,
   orbitOnlyHint,
 } from '../ui/inputHints';
@@ -30,6 +35,7 @@ import {
 type HUDListener = (state: GameHUDState) => void;
 
 const STORAGE_KEY = 'canopy3d_save_v1';
+const QUALITY_STORAGE_KEY = 'canopy3d_graphics_quality_v1';
 
 interface SavedProgress {
   completedContracts: Record<string, { stars: number; score: number; earnings: number }>;
@@ -49,6 +55,16 @@ export class GameEngine {
   private env: BuiltEnvironment | null = null;
   private trees: TreeRuntime[] = [];
   private currentContract: ContractSpec | null = null;
+  private graphicsQuality: GraphicsQuality = 'high';
+  private postPipeline: PostPipeline | null = null;
+  private iblRequestId = 0;
+  private foliageWindUniforms: FoliageWindUniforms = {
+    uTime: { value: 0 },
+    uWindStrength: { value: 0.18 },
+    uWindDir: { value: new THREE.Vector2(1, 0) },
+    uSunDir: { value: new THREE.Vector3(0.6, 0.5, -0.5).normalize() },
+    uSunColor: { value: new THREE.Color('#fff4cf') },
+  };
 
   private screen: GameHUDState['screen'] = 'title';
   private overlayBackScreen: GameHUDState['screen'] = 'title';
@@ -122,6 +138,7 @@ export class GameEngine {
     this.hudListener = hudListener;
 
     this.loadProgress();
+    this.graphicsQuality = this.loadGraphicsQuality();
 
     // Renderer setup with rich filmic tone mapping & crisp shadows
     this.renderer = new THREE.WebGLRenderer({
@@ -129,15 +146,21 @@ export class GameEngine {
       antialias: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const initDpr = Math.min(window.devicePixelRatio, this.graphicsQuality === 'high' ? 2 : 1.5);
+    this.renderer.setPixelRatio(initDpr);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.26;
+    this.renderer.toneMappingExposure = this.graphicsQuality === 'high' ? 1.14 : 1.24;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.25, 400);
+    pbrAssets.configureRenderer(this.renderer, this.graphicsQuality);
+    if (this.graphicsQuality === 'high') {
+      this.postPipeline = new PostPipeline(this.renderer, this.scene, this.camera);
+      this.postPipeline.setSize(window.innerWidth, window.innerHeight, initDpr);
+    }
     this.cameraCtrl = new CameraController(this.camera, canvas);
     this.particles = new ParticleSystem(this.scene);
     this.audio = new AudioEngine();
@@ -258,15 +281,114 @@ export class GameEngine {
     }
   }
 
+  private loadGraphicsQuality(): GraphicsQuality {
+    try {
+      const saved = localStorage.getItem(QUALITY_STORAGE_KEY);
+      if (saved === 'standard' || saved === 'high') return saved;
+    } catch {
+      // ignore
+    }
+    return isTouchUi() ? 'standard' : 'high';
+  }
+
+  public getGraphicsQuality(): GraphicsQuality {
+    return this.graphicsQuality;
+  }
+
+  public setGraphicsQuality(quality: GraphicsQuality): void {
+    if (this.graphicsQuality === quality) return;
+    this.audio.init();
+    this.audio.playClick();
+    this.graphicsQuality = quality;
+    try {
+      localStorage.setItem(QUALITY_STORAGE_KEY, quality);
+    } catch {
+      // ignore
+    }
+
+    const dpr = Math.min(window.devicePixelRatio, quality === 'high' ? 2 : 1.5);
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.toneMappingExposure = quality === 'high' ? 1.14 : 1.24;
+    pbrAssets.configureRenderer(this.renderer, quality);
+
+    if (quality === 'high') {
+      if (!this.postPipeline) {
+        this.postPipeline = new PostPipeline(this.renderer, this.scene, this.camera);
+      }
+      this.postPipeline.setSize(window.innerWidth, window.innerHeight, dpr);
+    }
+
+    if (!this.currentContract || this.screen === 'title') {
+      // Rebuild title diorama live so the player sees trees + environment switch immediately
+      this.loadDioramaScene();
+    } else {
+      // Live in-place environment upgrade/downgrade without losing active contract progress
+      if (this.env) {
+        this.scene.remove(this.env.group);
+      }
+      this.env = buildEnvironment(this.scene, this.currentContract, this.graphicsQuality);
+      this.applyEnvironmentLighting(this.currentContract, this.env);
+      this.showToast(
+        quality === 'high'
+          ? 'Detail: High (2K PBR · HDRI · God Rays · Water)'
+          : 'Detail: Standard (Fast mode)',
+        'info'
+      );
+    }
+    this.emitHUD();
+  }
+
+  private applyEnvironmentLighting(contract: ContractSpec, env: BuiltEnvironment): void {
+    this.iblRequestId++;
+    const reqId = this.iblRequestId;
+    this.foliageWindUniforms.uSunDir.value.copy(env.sunDir);
+    this.foliageWindUniforms.uSunColor.value.copy(env.sunLight.color);
+    const fog = this.scene.fog instanceof THREE.FogExp2 ? this.scene.fog : null;
+    this.particles.setEnvironmentContext({
+      site: contract.site,
+      weather: contract.weather,
+      quality: this.graphicsQuality,
+      sunDir: env.sunDir,
+      sunColor: env.sunLight.color,
+      ambientColor: env.hemiLight.color,
+      fogColor: fog ? fog.color : new THREE.Color('#bfcfcc'),
+      fogDensity: fog ? fog.density : 0.008,
+    });
+    if (this.graphicsQuality === 'high') {
+      this.postPipeline?.configureEnvironment(contract.site, contract.weather, env.sunDir);
+      const envIntensityByWeather: Record<ContractSpec['weather'], number> = {
+        sunny_morning: contract.site === 'kootenay_rockies' ? 0.86 : 0.78,
+        misty_fog: 0.9,
+        light_rain: 0.74,
+        golden_hour: 0.84,
+        coastal_gale: 0.78,
+      };
+      this.scene.environmentIntensity = envIntensityByWeather[contract.weather];
+      pbrAssets.loadWeatherHDRI(contract.weather, this.renderer).then((envTex) => {
+        if (reqId !== this.iblRequestId || this.graphicsQuality !== 'high') return;
+        this.scene.environment = envTex;
+      });
+    } else {
+      this.scene.environment = null;
+    }
+  }
+
   private loadDioramaScene(): void {
     this.clearCurrentScene();
     const previewContract = CAMPAIGN_CONTRACTS[2]; // Golden Hour Coastal Homestead with Cedar!
-    this.env = buildEnvironment(this.scene, previewContract);
+    this.env = buildEnvironment(this.scene, previewContract, this.graphicsQuality);
+    this.applyEnvironmentLighting(previewContract, this.env);
     this.particles.setWeather(previewContract.weather);
     this.audio.setEnvironment(previewContract.site, previewContract.weather);
     this.audio.setWindLevel(previewContract.windSpeed);
     for (const tSpec of previewContract.trees) {
-      const t = buildTreeRuntime(tSpec);
+      const t = buildTreeRuntime(tSpec, {
+        quality: this.graphicsQuality,
+        site: previewContract.site,
+        weather: previewContract.weather,
+        windUniforms: this.foliageWindUniforms,
+      });
       t.selectionRing.visible = false;
       this.scene.add(t.rootGroup);
       this.trees.push(t);
@@ -378,14 +500,20 @@ export class GameEngine {
     this.debriefData = undefined;
     this.cameraCtrl.setAutoRotate(0);
 
-    this.env = buildEnvironment(this.scene, contract);
+    this.env = buildEnvironment(this.scene, contract, this.graphicsQuality);
+    this.applyEnvironmentLighting(contract, this.env);
     this.particles.setWeather(contract.weather);
     this.audio.setEnvironment(contract.site, contract.weather);
     this.audio.setWindLevel(contract.windSpeed);
 
     // Spawn all contract trees & drop zones
     for (const tSpec of contract.trees) {
-      const tree = buildTreeRuntime(tSpec);
+      const tree = buildTreeRuntime(tSpec, {
+        quality: this.graphicsQuality,
+        site: contract.site,
+        weather: contract.weather,
+        windUniforms: this.foliageWindUniforms,
+      });
       this.scene.add(tree.rootGroup);
       if (tSpec.dropZone) {
         tree.dropZoneGroup = this.buildDropZoneVisual(tSpec.dropZone);
@@ -1195,9 +1323,12 @@ export class GameEngine {
     });
 
     window.addEventListener('resize', () => {
+      const dpr = Math.min(window.devicePixelRatio, this.graphicsQuality === 'high' ? 2 : 1.5);
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
+      this.renderer.setPixelRatio(dpr);
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.postPipeline?.setSize(window.innerWidth, window.innerHeight, dpr);
     });
 
     this.canvas.addEventListener('pointermove', (e) => {
@@ -3189,6 +3320,7 @@ export class GameEngine {
       windSpeed: contract?.windSpeed ?? 0,
       windAngle: contract?.windAngle ?? 0,
       muted: this.audio.isMuted(),
+      graphicsQuality: this.graphicsQuality,
       cameraAngleDeg: this.cameraCtrl.getAzimuthDeg(),
       completedContracts: this.completedContracts,
       totalEarnings: this.totalEarnings,
@@ -3238,15 +3370,17 @@ export class GameEngine {
     }
 
     this.updateVisualGuides(dt);
-    this.particles.update(
-      dt,
-      this.elapsed,
-      this.currentContract?.windSpeed ?? 0.12,
-      this.currentContract?.windAngle ?? 0.5
-    );
+    const activeWindSpeed = this.currentContract?.windSpeed ?? 0.18;
+    const activeWindAngle = this.currentContract?.windAngle ?? 0.5;
+    this.foliageWindUniforms.uTime.value = this.elapsed;
+    this.foliageWindUniforms.uWindStrength.value = activeWindSpeed;
+    this.foliageWindUniforms.uWindDir.value.set(Math.cos(activeWindAngle), Math.sin(activeWindAngle));
 
-    // Subtle shimmer on creek / coastal inlet / headland cove water
-    if (this.env?.waterMesh) {
+    this.particles.update(dt, this.elapsed, activeWindSpeed, activeWindAngle);
+    this.env?.updateEffects(this.elapsed, activeWindSpeed, activeWindAngle);
+
+    // Subtle Y shimmer on water in Standard mode (High uses animated GLSL Beer-Lambert waves)
+    if (this.env?.waterMesh && this.graphicsQuality === 'standard') {
       const baseWaterY =
         this.currentContract?.site === 'storm_bluff'
           ? -4.5
@@ -3256,7 +3390,11 @@ export class GameEngine {
       this.env.waterMesh.position.y = baseWaterY + Math.sin(this.elapsed * 1.8) * 0.02;
     }
 
-    this.renderer.render(this.scene, this.camera);
+    if (this.graphicsQuality === 'high' && this.postPipeline) {
+      this.postPipeline.render(this.camera);
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
 
     // Periodic HUD refresh during active cutting/playing
     this.hudEmitTimer += dt;
@@ -3271,6 +3409,8 @@ export class GameEngine {
   public dispose(): void {
     cancelAnimationFrame(this.animFrameId);
     this.audio.dispose();
+    this.postPipeline?.dispose();
+    pbrAssets.dispose();
     this.renderer.dispose();
   }
 }

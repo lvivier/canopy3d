@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WeatherId } from '../types';
+import { GraphicsQuality, SiteId, WeatherId } from '../types';
 
 interface DynamicParticle {
   mesh: THREE.Mesh;
@@ -12,6 +12,34 @@ interface DynamicParticle {
   startScale: number;
   endScale: number;
 }
+
+interface DustPuff {
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  age: number;
+  life: number;
+  startSize: number;
+  endSize: number;
+  rot: number;
+  rotSpeed: number;
+  seed: number;
+  color: THREE.Color;
+  opacity: number;
+  drag: number;
+  buoyancy: number;
+}
+
+interface ImpactMote {
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  age: number;
+  life: number;
+  size: number;
+  color: THREE.Color;
+}
+
+const MAX_DUST_PUFFS = 220;
+const MAX_IMPACT_MOTES = 240;
 
 interface FallingBranch {
   group: THREE.Object3D;
@@ -44,6 +72,8 @@ interface FallingTopSection {
 export class ParticleSystem {
   private scene: THREE.Scene;
   private particles: DynamicParticle[] = [];
+  private dustPuffs: DustPuff[] = [];
+  private impactMotes: ImpactMote[] = [];
   private fallingBranches: FallingBranch[] = [];
   private rollingLogs: RollingLogSegment[] = [];
   private fallingTopSections: FallingTopSection[] = [];
@@ -51,9 +81,26 @@ export class ParticleSystem {
   private rainLines: THREE.LineSegments;
   private rainDrops: Array<{ x: number; y: number; z: number; speed: number; len: number }> = [];
   private weather: WeatherId = 'sunny_morning';
+  private site: SiteId = 'coastal_homestead';
+  private quality: GraphicsQuality = 'high';
   private chipGeo = new THREE.BoxGeometry(0.11, 0.05, 0.08);
-  private dustGeo = new THREE.DodecahedronGeometry(0.32, 0);
   private leafGeo = new THREE.ConeGeometry(0.16, 0.28, 4);
+
+  // GPU-instanced procedural FBM shader dust plumes (single draw call!)
+  private dustCloudMesh: THREE.Mesh;
+  private dustCloudGeo: THREE.InstancedBufferGeometry;
+  private dustCloudMat: THREE.ShaderMaterial;
+  private dustCenterBuf = new Float32Array(MAX_DUST_PUFFS * 3);
+  private dustParamsBuf = new Float32Array(MAX_DUST_PUFFS * 4);
+  private dustColorBuf = new Float32Array(MAX_DUST_PUFFS * 3);
+  private dustOpacityBuf = new Float32Array(MAX_DUST_PUFFS);
+
+  // Soft radial-gradient hovering impact dust motes (single Points draw call!)
+  private impactMotePoints: THREE.Points;
+  private impactMoteMat: THREE.ShaderMaterial;
+  private motePosBuf = new Float32Array(MAX_IMPACT_MOTES * 3);
+  private moteColorBuf = new Float32Array(MAX_IMPACT_MOTES * 3);
+  private moteParamBuf = new Float32Array(MAX_IMPACT_MOTES * 2); // [size, alpha]
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -62,6 +109,377 @@ export class ParticleSystem {
     this.rainLines = this.createRainLines();
     this.rainLines.visible = false;
     this.scene.add(this.rainLines);
+
+    const { mesh, geo, mat } = this.createDustCloudSystem();
+    this.dustCloudMesh = mesh;
+    this.dustCloudGeo = geo;
+    this.dustCloudMat = mat;
+    this.scene.add(this.dustCloudMesh);
+
+    const motes = this.createImpactMoteSystem();
+    this.impactMotePoints = motes.points;
+    this.impactMoteMat = motes.mat;
+    this.scene.add(this.impactMotePoints);
+  }
+
+  public setEnvironmentContext(opts: {
+    site: SiteId;
+    weather: WeatherId;
+    quality: GraphicsQuality;
+    sunDir: THREE.Vector3;
+    sunColor: THREE.Color;
+    ambientColor: THREE.Color;
+    fogColor: THREE.Color;
+    fogDensity: number;
+  }): void {
+    this.site = opts.site;
+    this.quality = opts.quality;
+    this.setWeather(opts.weather);
+    (this.dustCloudMat.uniforms.uSunDir.value as THREE.Vector3).copy(opts.sunDir).normalize();
+    (this.dustCloudMat.uniforms.uSunColor.value as THREE.Color).copy(opts.sunColor);
+    (this.dustCloudMat.uniforms.uAmbientColor.value as THREE.Color).copy(opts.ambientColor);
+    (this.dustCloudMat.uniforms.uFogColor.value as THREE.Color).copy(opts.fogColor);
+    this.dustCloudMat.uniforms.uFogDensity.value = opts.fogDensity;
+    this.dustCloudMat.uniforms.uHighDetail.value = opts.quality === 'high' ? 1.0 : 0.0;
+
+    (this.impactMoteMat.uniforms.uFogColor.value as THREE.Color).copy(opts.fogColor);
+    this.impactMoteMat.uniforms.uFogDensity.value = opts.fogDensity;
+  }
+
+  private createDustCloudSystem(): {
+    mesh: THREE.Mesh;
+    geo: THREE.InstancedBufferGeometry;
+    mat: THREE.ShaderMaterial;
+  } {
+    const baseQuad = new THREE.PlaneGeometry(1, 1);
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.index = baseQuad.index;
+    geo.attributes.position = baseQuad.attributes.position;
+    geo.attributes.uv = baseQuad.attributes.uv;
+    baseQuad.dispose();
+
+    const centerAttr = new THREE.InstancedBufferAttribute(this.dustCenterBuf, 3);
+    centerAttr.setUsage(THREE.DynamicDrawUsage);
+    const paramsAttr = new THREE.InstancedBufferAttribute(this.dustParamsBuf, 4);
+    paramsAttr.setUsage(THREE.DynamicDrawUsage);
+    const colorAttr = new THREE.InstancedBufferAttribute(this.dustColorBuf, 3);
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+    const opacityAttr = new THREE.InstancedBufferAttribute(this.dustOpacityBuf, 1);
+    opacityAttr.setUsage(THREE.DynamicDrawUsage);
+
+    geo.setAttribute('aCenter', centerAttr);
+    geo.setAttribute('aParams', paramsAttr);
+    geo.setAttribute('aColor', colorAttr);
+    geo.setAttribute('aOpacity', opacityAttr);
+    geo.instanceCount = 0;
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSunDir: { value: new THREE.Vector3(0.55, 0.5, -0.55).normalize() },
+        uSunColor: { value: new THREE.Color('#fff2cc') },
+        uAmbientColor: { value: new THREE.Color('#7a8e84') },
+        uFogColor: { value: new THREE.Color('#bfcfcc') },
+        uFogDensity: { value: 0.008 },
+        uHighDetail: { value: 1.0 },
+      },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+      vertexShader: /* glsl */ `
+        attribute vec3 aCenter;
+        attribute vec4 aParams; // x: size, y: rotRad, z: lifeT [0..1], w: seed
+        attribute vec3 aColor;
+        attribute float aOpacity;
+
+        varying vec2 vQuadUv;
+        varying vec2 vBillowUv;
+        varying vec3 vWorldPos;
+        varying vec3 vColor;
+        varying float vLifeT;
+        varying float vSeed;
+        varying float vOpacity;
+        varying vec3 vCamRight;
+        varying vec3 vCamUp;
+        varying vec3 vCamForward;
+
+        void main() {
+          float size = aParams.x;
+          float rot = aParams.y;
+          float c = cos(rot);
+          float s = sin(rot);
+          vec2 local = vec2(
+            position.x * c - position.y * s,
+            position.x * s + position.y * c
+          );
+
+          // Camera-aligned billboard basis in world space
+          vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+          vec3 camUp = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+          vec3 camForward = -vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+
+          vec3 worldPos = aCenter + (camRight * local.x + camUp * local.y) * size;
+
+          vQuadUv = position.xy * 2.0; // [-1..1] rotates with puff swirl
+          vBillowUv = local * 2.0; // [-1..1] stays world-up aligned for true top/bottom lighting
+          vWorldPos = worldPos;
+          vColor = aColor;
+          vLifeT = aParams.z;
+          vSeed = aParams.w;
+          vOpacity = aOpacity;
+          vCamRight = camRight;
+          vCamUp = camUp;
+          vCamForward = camForward;
+
+          gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform vec3 uSunDir;
+        uniform vec3 uSunColor;
+        uniform vec3 uAmbientColor;
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        uniform float uHighDetail;
+
+        varying vec2 vQuadUv;
+        varying vec2 vBillowUv;
+        varying vec3 vWorldPos;
+        varying vec3 vColor;
+        varying float vLifeT;
+        varying float vSeed;
+        varying float vOpacity;
+        varying vec3 vCamRight;
+        varying vec3 vCamUp;
+        varying vec3 vCamForward;
+
+        float dHash(vec2 p) {
+          p = fract(p * vec2(127.1, 311.7));
+          p += dot(p, p + 34.5);
+          return fract(p.x * p.y);
+        }
+
+        float dNoise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(dHash(i), dHash(i + vec2(1.0, 0.0)), u.x),
+            mix(dHash(i + vec2(0.0, 1.0)), dHash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+          );
+        }
+
+        float fbmDust(vec2 p) {
+          float v = 0.0;
+          float a = 0.52;
+          mat2 m = mat2(0.8, 0.6, -0.6, 0.8);
+          v += a * dNoise(p); p = m * p * 2.05; a *= 0.5;
+          v += a * dNoise(p); p = m * p * 2.05; a *= 0.5;
+          v += a * dNoise(p);
+          if (uHighDetail > 0.5) {
+            p = m * p * 2.05; a *= 0.5;
+            v += a * dNoise(p);
+          }
+          return v;
+        }
+
+        void main() {
+          float r = length(vQuadUv);
+          if (r >= 1.0) discard;
+
+          // Swirling domain-warped FBM dust density that internally rises & erodes over life
+          vec2 seedOff = vec2(vSeed * 13.7, vSeed * 29.3);
+          vec2 flow = vec2(sin(vSeed * 6.283) * 0.25, -0.55) * vLifeT;
+          vec2 p = vQuadUv * 1.65 + seedOff + flow;
+
+          vec2 warp = vec2(
+            fbmDust(p + vec2(1.7, 9.2) + uTime * 0.14),
+            fbmDust(p + vec2(8.3, 2.8) - uTime * 0.11)
+          );
+          float n = fbmDust(p + (warp - 0.5) * 1.15);
+
+          // Organic wispy radial mask + lifetime erosion so clouds dissolve into fine tendrils
+          float radial = smoothstep(1.0, 0.12, r);
+          float radialSoft = radial * radial;
+          float erode = smoothstep(0.24, 1.0, vLifeT) * 0.44;
+          float density = smoothstep(0.24 + erode, 0.86, n * 0.78 + radial * 0.52) * radialSoft;
+
+          // Smooth fade-in right at impact and gentle lingering dissipation
+          float fadeIn = smoothstep(0.0, 0.11, vLifeT);
+          float fadeOut = 1.0 - smoothstep(0.36, 1.0, vLifeT);
+          // Soft ground-plane feather prevents harsh flat clipping where billboards touch soil
+          float groundFade = smoothstep(-0.22, 0.38, vWorldPos.y);
+
+          float alpha = density * fadeIn * fadeOut * groundFade * vOpacity;
+          if (alpha < 0.008) discard;
+
+          // Hemispherical billow shading perturbed by FBM gradients for volumetric puff depth
+          float nRight = fbmDust(p + vec2(0.18, 0.0) + (warp - 0.5) * 1.15);
+          float nUp = fbmDust(p + vec2(0.0, 0.18) + (warp - 0.5) * 1.15);
+          float billowZ = sqrt(max(0.04, 1.0 - r * r));
+          vec3 billowLocal = normalize(vec3(
+            vBillowUv.x * 0.55 + (n - nRight) * 1.4,
+            vBillowUv.y * 0.55 + 0.22 + (n - nUp) * 1.4,
+            billowZ
+          ));
+          vec3 rawWorldN =
+            vCamRight * billowLocal.x +
+            vCamUp * billowLocal.y -
+            vCamForward * billowLocal.z;
+          vec3 worldN = dot(rawWorldN, rawWorldN) > 1e-6 ? normalize(rawWorldN) : vec3(0.0, 1.0, 0.0);
+
+          vec3 sunD = dot(uSunDir, uSunDir) > 1e-6 ? normalize(uSunDir) : vec3(0.0, 1.0, 0.0);
+          // Soft wrap lighting + warm upward sky bounce + subtle backlit dust silver lining
+          float ndl = clamp(dot(worldN, sunD) * 0.55 + 0.45, 0.0, 1.0);
+          float topGrad = clamp(vBillowUv.y * 0.45 + 0.55, 0.0, 1.0);
+          vec3 toCam = cameraPosition - vWorldPos;
+          vec3 viewDir = dot(toCam, toCam) > 1e-6 ? normalize(toCam) : vec3(0.0, 0.0, 1.0);
+          float backLit = clamp(dot(-viewDir, sunD), 0.0, 1.0);
+          float silver = (backLit * backLit * backLit) * (1.0 - density * 0.55) * 0.42;
+
+          vec3 shadowTint = vColor * (uAmbientColor * 0.72 + vec3(0.16));
+          vec3 litTint = vColor * (uSunColor * 0.92 + uAmbientColor * 0.42);
+          vec3 dustCol = mix(shadowTint, litTint, clamp(ndl * 0.7 + topGrad * 0.3, 0.0, 1.0));
+          dustCol += uSunColor * silver * 0.48;
+
+          // Match scene FogExp2
+          float camDist = length(cameraPosition - vWorldPos);
+          float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * camDist * camDist);
+          dustCol = mix(dustCol, uFogColor, clamp(fogFactor, 0.0, 1.0));
+
+          gl_FragColor = vec4(clamp(dustCol, vec3(0.0), vec3(4.0)), clamp(alpha, 0.0, 0.86));
+        }
+      `,
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 3;
+    return { mesh, geo, mat };
+  }
+
+  private createImpactMoteSystem(): {
+    points: THREE.Points;
+    mat: THREE.ShaderMaterial;
+  } {
+    const geo = new THREE.BufferGeometry();
+    const posAttr = new THREE.BufferAttribute(this.motePosBuf, 3);
+    posAttr.setUsage(THREE.DynamicDrawUsage);
+    const colAttr = new THREE.BufferAttribute(this.moteColorBuf, 3);
+    colAttr.setUsage(THREE.DynamicDrawUsage);
+    const paramAttr = new THREE.BufferAttribute(this.moteParamBuf, 2);
+    paramAttr.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('position', posAttr);
+    geo.setAttribute('aColor', colAttr);
+    geo.setAttribute('aParam', paramAttr);
+    geo.setDrawRange(0, 0);
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uFogColor: { value: new THREE.Color('#bfcfcc') },
+        uFogDensity: { value: 0.008 },
+      },
+      transparent: true,
+      depthWrite: false,
+      vertexShader: /* glsl */ `
+        attribute vec3 aColor;
+        attribute vec2 aParam; // x: size, y: alpha
+        varying vec3 vColor;
+        varying float vAlpha;
+        varying float vCamDist;
+
+        void main() {
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+          vCamDist = max(0.5, -mvPos.z);
+          vColor = aColor;
+          vAlpha = aParam.y;
+          gl_PointSize = clamp((aParam.x * 260.0) / vCamDist, 1.5, 22.0);
+          gl_Position = projectionMatrix * mvPos;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        varying vec3 vColor;
+        varying float vAlpha;
+        varying float vCamDist;
+
+        void main() {
+          vec2 c = gl_PointCoord * 2.0 - 1.0;
+          float r2 = dot(c, c);
+          if (r2 >= 1.0) discard;
+          float soft = pow(max(1e-4, 1.0 - r2), 2.1);
+          float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * vCamDist * vCamDist);
+          vec3 col = mix(vColor, uFogColor, clamp(fogFactor, 0.0, 1.0));
+          gl_FragColor = vec4(col, soft * vAlpha);
+        }
+      `,
+    });
+
+    const points = new THREE.Points(geo, mat);
+    points.frustumCulled = false;
+    points.renderOrder = 4;
+    return { points, mat };
+  }
+
+  private getSiteDustPalette(): { core: string; haze: string; mote: string; dryMult: number } {
+    const isRain = this.weather === 'light_rain';
+    const isMist = this.weather === 'misty_fog';
+    if (this.site === 'kootenay_rockies') {
+      return {
+        core: isRain ? '#8c7e6a' : '#bfa884',
+        haze: isRain ? '#a99e8d' : '#d8c5a3',
+        mote: '#eadab8',
+        dryMult: isRain ? 0.72 : 1.18,
+      };
+    }
+    if (this.site === 'misty_creek') {
+      return {
+        core: isRain || isMist ? '#7a7b6f' : '#8f836c',
+        haze: isRain || isMist ? '#b4c2bc' : '#b2aa96',
+        mote: '#cfd8ce',
+        dryMult: isRain ? 0.68 : 0.92,
+      };
+    }
+    if (this.site === 'pacific_headland' || this.site === 'storm_bluff') {
+      return {
+        core: isRain ? '#7f786c' : '#a8977b',
+        haze: isRain ? '#aeb8b6' : '#c7baa0',
+        mote: '#ded3ba',
+        dryMult: isRain ? 0.72 : 1.05,
+      };
+    }
+    if (this.site === 'coastal_town') {
+      return {
+        core: '#8d836d',
+        haze: '#b6ae99',
+        mote: '#d7cfb8',
+        dryMult: isRain ? 0.7 : 0.9,
+      };
+    }
+    // coastal_homestead & timber_ridge
+    return {
+      core: isRain ? '#786e5e' : '#9b886c',
+      haze: isRain ? '#a8b2ac' : '#c0b195',
+      mote: '#d9ccb0',
+      dryMult: isRain ? 0.74 : 1.04,
+    };
+  }
+
+  private addDustPuff(puff: DustPuff): void {
+    if (this.dustPuffs.length >= MAX_DUST_PUFFS) {
+      this.dustPuffs.shift();
+    }
+    this.dustPuffs.push(puff);
+  }
+
+  private addImpactMote(mote: ImpactMote): void {
+    if (this.impactMotes.length >= MAX_IMPACT_MOTES) {
+      this.impactMotes.shift();
+    }
+    this.impactMotes.push(mote);
   }
 
   public setWeather(weather: WeatherId): void {
@@ -220,47 +638,149 @@ export class ParticleSystem {
   ): void {
     const dx = Math.cos(fallAngle);
     const dz = Math.sin(fallAngle);
-    const dustMat = new THREE.MeshStandardMaterial({
-      color: '#9c8c72',
-      transparent: true,
-      opacity: 0.55,
-      roughness: 1,
-      flatShading: true,
-    });
+    // Horizontal normal perpendicular to the fallen trunk for ground-hugging lateral shockwave billows
+    const perpX = -dz;
+    const perpZ = dx;
 
-    // Billowing dust clouds along the full length of the fallen tree!
-    const samples = 14;
-    for (let i = 2; i < samples; i++) {
-      const dist = (i / samples) * treeHeight;
-      const p = new THREE.Vector3(basePos.x + dx * dist, 0.35, basePos.z + dz * dist);
-      for (let k = 0; k < 2; k++) {
-        const m = new THREE.Mesh(this.dustGeo, dustMat);
-        m.position.copy(p).add(
-          new THREE.Vector3((Math.random() - 0.5) * 2.2, Math.random() * 0.5, (Math.random() - 0.5) * 2.2)
-        );
-        const s = 0.8 + Math.random() * 1.2;
-        m.scale.setScalar(s);
-        this.scene.add(m);
-        this.particles.push({
-          mesh: m,
-          vel: new THREE.Vector3(
-            (Math.random() - 0.5) * 3.8,
-            1.4 + Math.random() * 2.6,
-            (Math.random() - 0.5) * 3.8
+    const palette = this.getSiteDustPalette();
+    const coreColor = new THREE.Color(palette.core);
+    const hazeColor = new THREE.Color(palette.haze);
+    const moteColor = new THREE.Color(palette.mote);
+    const isHigh = this.quality === 'high';
+    const scaleFactor = THREE.MathUtils.clamp(treeHeight / 18, 0.72, 1.55);
+
+    // Layer 1: Ground-level lateral shockwave dust billows rolling outward along both sides of the trunk
+    const samples = isHigh ? 18 : 13;
+    for (let i = 1; i <= samples; i++) {
+      const frac = i / samples;
+      const dist = (0.12 + frac * 0.92) * treeHeight;
+      const isCrownZone = frac > 0.48;
+      const p = new THREE.Vector3(basePos.x + dx * dist, 0.25, basePos.z + dz * dist);
+
+      for (const side of [-1, 1]) {
+        const lateralSpeed = (2.2 + Math.random() * 2.8) * (isCrownZone ? 1.25 : 0.95) * scaleFactor;
+        const startSize = (1.6 + Math.random() * 1.1) * (isCrownZone ? 1.3 : 1.0) * scaleFactor;
+        const puffColor = coreColor.clone().lerp(hazeColor, 0.2 + Math.random() * 0.35);
+        puffColor.offsetHSL((Math.random() - 0.5) * 0.02, 0, (Math.random() - 0.5) * 0.06);
+
+        this.addDustPuff({
+          pos: p.clone().add(
+            new THREE.Vector3(
+              perpX * side * (0.45 + Math.random() * 0.9) + (Math.random() - 0.5) * 0.8,
+              0.25 + Math.random() * 0.45,
+              perpZ * side * (0.45 + Math.random() * 0.9) + (Math.random() - 0.5) * 0.8
+            )
           ),
-          rotVel: new THREE.Vector3(1, 2, 1),
+          vel: new THREE.Vector3(
+            perpX * side * lateralSpeed + dx * (Math.random() - 0.25) * 1.4,
+            0.85 + Math.random() * 1.35 + (isCrownZone ? 0.55 : 0),
+            perpZ * side * lateralSpeed + dz * (Math.random() - 0.25) * 1.4
+          ),
           age: 0,
-          life: 1.3 + Math.random() * 0.9,
-          gravity: 0.4,
-          drag: 0.93,
-          startScale: s,
-          endScale: s * 2.4,
+          life: (1.75 + Math.random() * 1.15) * palette.dryMult,
+          startSize,
+          endSize: startSize * (2.6 + Math.random() * 1.1),
+          rot: Math.random() * Math.PI * 2,
+          rotSpeed: (Math.random() > 0.5 ? 1 : -1) * (0.35 + Math.random() * 0.65),
+          seed: Math.random() * 100,
+          color: puffColor,
+          opacity: (isCrownZone ? 0.58 : 0.50) * palette.dryMult,
+          drag: 0.925,
+          buoyancy: 0.38 + Math.random() * 0.32,
         });
       }
 
-      if (i > samples * 0.45) {
+      // Layer 2: Taller lingering wispy thermal haze rising slowly over the crash corridor
+      if (i % 2 === 0 || isCrownZone) {
+        const hazeSize = (2.5 + Math.random() * 1.6) * (isCrownZone ? 1.35 : 1.0) * scaleFactor;
+        const veilColor = hazeColor.clone();
+        veilColor.offsetHSL((Math.random() - 0.5) * 0.02, -0.04, (Math.random() - 0.5) * 0.05);
+        this.addDustPuff({
+          pos: p.clone().add(
+            new THREE.Vector3(
+              (Math.random() - 0.5) * 2.6,
+              0.7 + Math.random() * 1.0,
+              (Math.random() - 0.5) * 2.6
+            )
+          ),
+          vel: new THREE.Vector3(
+            (Math.random() - 0.5) * 1.6,
+            1.15 + Math.random() * 1.4,
+            (Math.random() - 0.5) * 1.6
+          ),
+          age: 0,
+          life: (2.5 + Math.random() * 1.55) * palette.dryMult,
+          startSize: hazeSize,
+          endSize: hazeSize * (2.3 + Math.random() * 0.9),
+          rot: Math.random() * Math.PI * 2,
+          rotSpeed: (Math.random() - 0.5) * 0.45,
+          seed: Math.random() * 100,
+          color: veilColor,
+          opacity: 0.32 * palette.dryMult,
+          drag: 0.955,
+          buoyancy: 0.52 + Math.random() * 0.25,
+        });
+      }
+
+      if (isCrownZone) {
         this.spawnFoliageBurst(p.clone().add(new THREE.Vector3(0, 1.0, 0)), foliageColors, 4);
       }
+    }
+
+    // Layer 3: Fine airborne sunlit dust motes suspended & drifting in the impact air
+    const moteCount = isHigh ? 135 : 75;
+    for (let m = 0; m < moteCount; m++) {
+      const dist = (0.1 + Math.random() * 0.98) * treeHeight;
+      const side = Math.random() > 0.5 ? 1 : -1;
+      const spread = (Math.random() * 2.4 + 0.3) * scaleFactor;
+      const col = moteColor.clone();
+      col.offsetHSL((Math.random() - 0.5) * 0.03, 0, (Math.random() - 0.5) * 0.12);
+      this.addImpactMote({
+        pos: new THREE.Vector3(
+          basePos.x + dx * dist + perpX * side * spread * 0.6 + (Math.random() - 0.5) * 1.4,
+          0.18 + Math.random() * 1.35,
+          basePos.z + dz * dist + perpZ * side * spread * 0.6 + (Math.random() - 0.5) * 1.4
+        ),
+        vel: new THREE.Vector3(
+          perpX * side * (1.2 + Math.random() * 3.4) + (Math.random() - 0.5) * 1.6,
+          1.0 + Math.random() * 3.2,
+          perpZ * side * (1.2 + Math.random() * 3.4) + (Math.random() - 0.5) * 1.6
+        ),
+        age: 0,
+        life: 1.9 + Math.random() * 2.1,
+        size: 0.06 + Math.random() * 0.12,
+        color: col,
+      });
+    }
+  }
+
+  /** Spawns a compact localized billowing shader dust puff (e.g. when a pieced top hits the ground). */
+  public spawnSmallDustPuff(pos: THREE.Vector3, radius = 1.6): void {
+    const palette = this.getSiteDustPalette();
+    const baseCol = new THREE.Color(palette.core).lerp(new THREE.Color(palette.haze), 0.35);
+    const count = this.quality === 'high' ? 7 : 4;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + Math.random() * 0.5;
+      const spd = 1.2 + Math.random() * 1.8;
+      this.addDustPuff({
+        pos: new THREE.Vector3(
+          pos.x + Math.cos(a) * radius * 0.35,
+          Math.max(0.2, pos.y * 0.35),
+          pos.z + Math.sin(a) * radius * 0.35
+        ),
+        vel: new THREE.Vector3(Math.cos(a) * spd, 0.75 + Math.random() * 1.1, Math.sin(a) * spd),
+        age: 0,
+        life: 1.4 + Math.random() * 0.9,
+        startSize: radius * (0.9 + Math.random() * 0.5),
+        endSize: radius * (2.5 + Math.random() * 0.8),
+        rot: Math.random() * Math.PI * 2,
+        rotSpeed: (Math.random() - 0.5) * 0.7,
+        seed: Math.random() * 100,
+        color: baseCol.clone(),
+        opacity: 0.44 * palette.dryMult,
+        drag: 0.93,
+        buoyancy: 0.35,
+      });
     }
   }
 
@@ -489,7 +1009,97 @@ export class ParticleSystem {
       rPos.needsUpdate = true;
     }
 
-    // Dynamic chips, sawdust, leaves, dust
+    // Update GPU-instanced volumetric shader dust plumes (billowing expansion + wind drift + thermal rise)
+    this.dustCloudMat.uniforms.uTime.value = elapsed;
+    const windPushX = Math.cos(windAngle) * (0.45 + windSpeed * 3.6);
+    const windPushZ = Math.sin(windAngle) * (0.45 + windSpeed * 3.6);
+    for (let i = this.dustPuffs.length - 1; i >= 0; i--) {
+      const puff = this.dustPuffs[i];
+      puff.age += dt;
+      if (puff.age >= puff.life) {
+        this.dustPuffs.splice(i, 1);
+        continue;
+      }
+      const dragPow = Math.pow(puff.drag, dt * 60);
+      puff.vel.x = puff.vel.x * dragPow + windPushX * (1 - dragPow) * 0.55;
+      puff.vel.z = puff.vel.z * dragPow + windPushZ * (1 - dragPow) * 0.55;
+      puff.vel.y = puff.vel.y * dragPow + puff.buoyancy * dt;
+      puff.pos.addScaledVector(puff.vel, dt);
+      if (puff.pos.y < 0.16) puff.pos.y = 0.16;
+      puff.rot += puff.rotSpeed * dt;
+    }
+
+    const puffCount = this.dustPuffs.length;
+    if (puffCount > 0) {
+      for (let i = 0; i < puffCount; i++) {
+        const puff = this.dustPuffs[i];
+        const t = THREE.MathUtils.clamp(puff.age / puff.life, 0, 1);
+        // Fast initial billow expansion tapering smoothly as dust lingers
+        const expandT = 1 - Math.pow(1 - t, 2.2);
+        const size = THREE.MathUtils.lerp(puff.startSize, puff.endSize, expandT);
+        const i3 = i * 3;
+        const i4 = i * 4;
+        this.dustCenterBuf[i3] = puff.pos.x;
+        this.dustCenterBuf[i3 + 1] = puff.pos.y;
+        this.dustCenterBuf[i3 + 2] = puff.pos.z;
+        this.dustParamsBuf[i4] = size;
+        this.dustParamsBuf[i4 + 1] = puff.rot;
+        this.dustParamsBuf[i4 + 2] = t;
+        this.dustParamsBuf[i4 + 3] = puff.seed;
+        this.dustColorBuf[i3] = puff.color.r;
+        this.dustColorBuf[i3 + 1] = puff.color.g;
+        this.dustColorBuf[i3 + 2] = puff.color.b;
+        this.dustOpacityBuf[i] = puff.opacity;
+      }
+      (this.dustCloudGeo.attributes.aCenter as THREE.InstancedBufferAttribute).needsUpdate = true;
+      (this.dustCloudGeo.attributes.aParams as THREE.InstancedBufferAttribute).needsUpdate = true;
+      (this.dustCloudGeo.attributes.aColor as THREE.InstancedBufferAttribute).needsUpdate = true;
+      (this.dustCloudGeo.attributes.aOpacity as THREE.InstancedBufferAttribute).needsUpdate = true;
+    }
+    this.dustCloudGeo.instanceCount = puffCount;
+
+    // Update fine airborne hovering impact dust motes
+    for (let i = this.impactMotes.length - 1; i >= 0; i--) {
+      const m = this.impactMotes[i];
+      m.age += dt;
+      if (m.age >= m.life) {
+        this.impactMotes.splice(i, 1);
+        continue;
+      }
+      const damp = Math.pow(0.935, dt * 60);
+      m.vel.x = m.vel.x * damp + windPushX * (1 - damp) * 0.7;
+      m.vel.z = m.vel.z * damp + windPushZ * (1 - damp) * 0.7;
+      m.vel.y = m.vel.y * damp - 0.55 * dt;
+      m.pos.addScaledVector(m.vel, dt);
+      if (m.pos.y < 0.08) {
+        m.pos.y = 0.08;
+        m.vel.y = Math.abs(m.vel.y) * 0.2;
+      }
+    }
+    const moteCount = this.impactMotes.length;
+    if (moteCount > 0) {
+      for (let i = 0; i < moteCount; i++) {
+        const m = this.impactMotes[i];
+        const t = THREE.MathUtils.clamp(m.age / m.life, 0, 1);
+        const alpha = THREE.MathUtils.smoothstep(t, 0, 0.08) * (1 - THREE.MathUtils.smoothstep(t, 0.35, 1)) * 0.78;
+        const i3 = i * 3;
+        const i2 = i * 2;
+        this.motePosBuf[i3] = m.pos.x;
+        this.motePosBuf[i3 + 1] = m.pos.y;
+        this.motePosBuf[i3 + 2] = m.pos.z;
+        this.moteColorBuf[i3] = m.color.r;
+        this.moteColorBuf[i3 + 1] = m.color.g;
+        this.moteColorBuf[i3 + 2] = m.color.b;
+        this.moteParamBuf[i2] = m.size;
+        this.moteParamBuf[i2 + 1] = alpha;
+      }
+      (this.impactMotePoints.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+      (this.impactMotePoints.geometry.attributes.aColor as THREE.BufferAttribute).needsUpdate = true;
+      (this.impactMotePoints.geometry.attributes.aParam as THREE.BufferAttribute).needsUpdate = true;
+    }
+    this.impactMotePoints.geometry.setDrawRange(0, moteCount);
+
+    // Dynamic chips, sawdust, leaves
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i];
       p.age += dt;
@@ -590,6 +1200,7 @@ export class ParticleSystem {
       fts.tipSpeed = Math.min(2.8, fts.tipSpeed + 1.4 * dt);
 
       if (fts.pivot.position.y <= 1.6 || fts.age >= 0.95) {
+        this.spawnSmallDustPuff(fts.pivot.position, 2.1);
         this.dissolveLimb(fts.pivot, fts.foliageColors, fts.woodColor);
         this.fallingTopSections.splice(i, 1);
       }
@@ -601,6 +1212,10 @@ export class ParticleSystem {
       this.scene.remove(p.mesh);
     }
     this.particles = [];
+    this.dustPuffs = [];
+    this.dustCloudGeo.instanceCount = 0;
+    this.impactMotes = [];
+    this.impactMotePoints.geometry.setDrawRange(0, 0);
     for (const fb of this.fallingBranches) {
       this.scene.remove(fb.group);
     }

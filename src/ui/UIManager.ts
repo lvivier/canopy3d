@@ -8,7 +8,7 @@ import {
 } from '../data/contracts';
 import { SPECIES_LIST } from '../data/species';
 import { GameEngine } from '../gameplay/GameEngine';
-import { GameHUDState, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
+import { GameHUDState, GraphicsQuality, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
 import { isTouchUi } from './inputHints';
 
 const TOOL_META: Record<ToolId, { name: string; key: string; icon: string; desc: string }> = {
@@ -133,6 +133,12 @@ export class UIManager {
 
     if (state.screen === 'playing') {
       this.updatePlayingHUD(state);
+    } else if (state.screen === 'title') {
+      this.root.querySelectorAll<HTMLButtonElement>('[data-quality-opt]').forEach((btn) => {
+        const active = btn.dataset.qualityOpt === state.graphicsQuality;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
     }
   }
 
@@ -203,6 +209,24 @@ export class UIManager {
             <span class="hint-touch"><b>Pinch</b> Zoom</span>
           </span>
         </div>
+
+        <div class="title-quality-row">
+          <span class="quality-label">Graphics Detail</span>
+          <div class="quality-segmented" role="group" aria-label="Graphics Detail">
+            <button
+              type="button"
+              class="quality-opt ${state.graphicsQuality === 'standard' ? 'active' : ''}"
+              data-quality-opt="standard"
+              aria-pressed="${state.graphicsQuality === 'standard' ? 'true' : 'false'}"
+            >Standard</button>
+            <button
+              type="button"
+              class="quality-opt ${state.graphicsQuality === 'high' ? 'active' : ''}"
+              data-quality-opt="high"
+              aria-pressed="${state.graphicsQuality === 'high' ? 'true' : 'false'}"
+            >High</button>
+          </div>
+        </div>
       </div>
     `;
     this.root.appendChild(wrap);
@@ -215,6 +239,12 @@ export class UIManager {
     });
     wrap.querySelector('#btn-open-sandbox')?.addEventListener('click', () => {
       this.engine.openScreen('sandbox');
+    });
+    wrap.querySelectorAll<HTMLButtonElement>('[data-quality-opt]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const q = btn.dataset.qualityOpt as GraphicsQuality | undefined;
+        if (q) this.engine.setGraphicsQuality(q);
+      });
     });
   }
 
@@ -450,6 +480,13 @@ export class UIManager {
             <button type="button" class="hud-menu-item" id="btn-menu-sandbox">Free Cut</button>
           </div>
           <div class="hud-menu-panel" data-menu-panel="settings" role="tabpanel" hidden>
+            <div class="hud-menu-setting-row">
+              <span class="hud-menu-setting-label">Graphics detail</span>
+              <div class="quality-segmented" role="group" aria-label="Graphics Detail">
+                <button type="button" class="quality-opt" data-hud-quality="standard" aria-pressed="false">Standard</button>
+                <button type="button" class="quality-opt" data-hud-quality="high" aria-pressed="false">High</button>
+              </div>
+            </div>
             <button type="button" class="hud-menu-item" id="btn-menu-mute">🔊 Sound on</button>
             <button type="button" class="hud-menu-item hud-menu-item-danger" id="btn-menu-reset-progress">Reset progress</button>
           </div>
@@ -587,6 +624,12 @@ export class UIManager {
       goHome();
     });
     hud.querySelector('#btn-menu-mute')?.addEventListener('click', () => toggleMute());
+    hud.querySelectorAll<HTMLButtonElement>('[data-hud-quality]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const q = btn.dataset.hudQuality as GraphicsQuality | undefined;
+        if (q) this.engine.setGraphicsQuality(q);
+      });
+    });
     hud.querySelector('#btn-menu-restart')?.addEventListener('click', () => {
       this.setHudMenuOpen(false);
       restartJob();
@@ -781,6 +824,11 @@ export class UIManager {
     if (menuMute) {
       menuMute.textContent = state.muted ? '🔇 Sound off' : '🔊 Sound on';
     }
+    hud.querySelectorAll<HTMLButtonElement>('[data-hud-quality]').forEach((btn) => {
+      const active = btn.dataset.hudQuality === state.graphicsQuality;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
 
     // Active Species Card
     const spCard = hud.querySelector('#hud-species-card') as HTMLElement;

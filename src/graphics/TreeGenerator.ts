@@ -2,14 +2,25 @@ import * as THREE from 'three';
 import {
   BranchData,
   BuckRingData,
+  GraphicsQuality,
   LogSegmentData,
+  SiteId,
   SpeciesSpec,
   StandingTopCutData,
   TreePlacementSpec,
   TreeRuntime,
+  WeatherId,
 } from '../types';
 import { PNW_SPECIES } from '../data/species';
-import { textureCache } from './ProceduralTextures';
+import { ensureAoUv, pbrAssets, SPECIES_BARK_PROFILES } from './PbrAssetManager';
+import { applyBarkSurfaceShader, applyFoliageWindShader, FoliageWindUniforms } from './MaterialShaders';
+
+export interface TreeBuildOptions {
+  quality?: GraphicsQuality;
+  site?: SiteId;
+  weather?: WeatherId;
+  windUniforms?: FoliageWindUniforms;
+}
 
 function makeRng(seed: number): () => number {
   let s = seed % 2147483647;
@@ -538,13 +549,20 @@ function createFoliageCluster(
     }
   }
 
+  group.userData.isFoliage = true;
   return group;
 }
 
-export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
+export function buildTreeRuntime(
+  spec: TreePlacementSpec,
+  options: TreeBuildOptions = {}
+): TreeRuntime {
+  const quality: GraphicsQuality = options.quality ?? 'high';
+  const site: SiteId = options.site ?? 'coastal_homestead';
+  const weather: WeatherId = options.weather ?? 'sunny_morning';
   const speciesSpec = PNW_SPECIES[spec.species];
   const rand = makeRng(spec.seed);
-  const barkSet = textureCache.getBarkTextures(spec.species);
+  const barkProfile = SPECIES_BARK_PROFILES[spec.species];
 
   const rootGroup = new THREE.Group();
   rootGroup.position.set(spec.x, 0, spec.z);
@@ -555,17 +573,79 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
       ? Math.max(0.58, spec.height * 0.075)
       : Math.min(1.15, Math.max(0.85, spec.height * 0.055));
 
-  const barkMat = new THREE.MeshStandardMaterial({
-    map: barkSet.map,
-    bumpMap: barkSet.bumpMap,
-    bumpScale: 0.07,
-    roughness: 0.92,
-    metalness: 0.02,
+  const upperHeightEst = Math.max(4, spec.height - cutHeight);
+  const trunkCircumference = 2 * Math.PI * baseRadius;
+  const repeatX = Math.max(1, Math.round(trunkCircumference / 1.35));
+  const repeatY = Math.max(2, Math.round(upperHeightEst / barkProfile.metersPerTileV));
+
+  const pbrBark = pbrAssets.getPbrSet(barkProfile.textureId, quality, {
+    repeatX,
+    repeatY,
   });
 
+  const pbrEndGrain = pbrAssets.getPbrSet('sawn_end_grain', quality, {
+    wrapS: THREE.ClampToEdgeWrapping,
+    wrapT: THREE.ClampToEdgeWrapping,
+  });
+
+  const wetClearcoat =
+    weather === 'light_rain'
+      ? 0.72 * barkProfile.wetSheen
+      : weather === 'coastal_gale'
+        ? 0.45 * barkProfile.wetSheen
+        : weather === 'misty_fog'
+          ? 0.16 * barkProfile.wetSheen
+          : 0.0;
+
+  let barkMat: THREE.MeshStandardMaterial;
+  if (quality === 'high') {
+    const physBark = new THREE.MeshPhysicalMaterial({
+      map: pbrBark.map,
+      normalMap: pbrBark.normalMap,
+      normalScale: new THREE.Vector2(barkProfile.normalScale, barkProfile.normalScale),
+      roughnessMap: pbrBark.armMap,
+      aoMap: pbrBark.armMap,
+      aoMapIntensity: barkProfile.aoIntensity,
+      color: new THREE.Color(barkProfile.tint),
+      roughness: barkProfile.roughness,
+      metalness: 0.02,
+      clearcoat: wetClearcoat,
+      clearcoatRoughness: weather === 'light_rain' ? 0.22 : 0.3,
+    });
+    applyBarkSurfaceShader(physBark, {
+      site,
+      weather,
+      mossAffinity: barkProfile.mossAffinity,
+    });
+    barkMat = physBark;
+  } else {
+    barkMat = new THREE.MeshStandardMaterial({
+      map: pbrBark.map,
+      normalMap: pbrBark.normalMap,
+      normalScale: new THREE.Vector2(barkProfile.normalScale * 0.85, barkProfile.normalScale * 0.85),
+      color: new THREE.Color(barkProfile.tint),
+      roughness: barkProfile.roughness,
+      metalness: 0.02,
+    });
+  }
+
+  // Blend species heartwood & sapwood into our Step-3 photographed chainsaw end-grain!
+  const endTint = new THREE.Color(speciesSpec.sapwoodColor).lerp(
+    new THREE.Color(speciesSpec.heartwoodColor),
+    0.35
+  );
+  // Keep luminance lifted so photographed grain doesn't darken excessively
+  endTint.lerp(new THREE.Color('#ffffff'), 0.42);
+
   const endGrainMat = new THREE.MeshStandardMaterial({
-    map: barkSet.endGrainMap,
-    roughness: 0.75,
+    map: pbrEndGrain.map,
+    normalMap: quality === 'high' ? pbrEndGrain.normalMap : null,
+    normalScale: new THREE.Vector2(0.65, 0.65),
+    roughnessMap: quality === 'high' ? pbrEndGrain.armMap : null,
+    aoMap: quality === 'high' ? pbrEndGrain.armMap : null,
+    aoMapIntensity: 0.45,
+    color: endTint,
+    roughness: 0.82,
     metalness: 0.02,
   });
 
@@ -581,13 +661,21 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     baseRadius * 1.06,
     baseRadius * 0.95,
     cutHeight,
-    32,
+    quality === 'high' ? 36 : 24,
     5,
     speciesSpec.buttressFlare,
     0,
     0,
     false
   );
+  // Match vertical bark texel density 1:1 between stump and butt log across the cut line
+  const stumpUv = stumpGeo.attributes.uv;
+  const stumpVScale = cutHeight / upperHeightEst;
+  for (let i = 0; i < stumpUv.count; i++) {
+    stumpUv.setY(i, stumpUv.getY(i) * stumpVScale);
+  }
+  stumpUv.needsUpdate = true;
+  ensureAoUv(stumpGeo);
   const stumpMesh = new THREE.Mesh(stumpGeo, barkMat);
   stumpMesh.castShadow = true;
   stumpMesh.receiveShadow = true;
@@ -595,8 +683,9 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   stumpGroup.add(stumpMesh);
 
   // Stump top end-grain cap (seamless flush CircleGeometry — zero Z-fighting!)
-  const stumpCapGeo = new THREE.CircleGeometry(baseRadius * 0.95, 32);
+  const stumpCapGeo = new THREE.CircleGeometry(baseRadius * 0.95, quality === 'high' ? 36 : 24);
   stumpCapGeo.rotateX(-Math.PI / 2);
+  ensureAoUv(stumpCapGeo);
   const stumpCap = new THREE.Mesh(stumpCapGeo, endGrainMat);
   stumpCap.position.y = cutHeight;
   stumpCap.receiveShadow = true;
@@ -669,7 +758,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     const segGroup = new THREE.Group();
     segGroup.position.copy(midCenter);
 
-    const radialSegs = sIdx === 0 ? 32 : 16;
+    const radialSegs = sIdx === 0 ? (quality === 'high' ? 36 : 24) : 16;
     const segHeightSegs = Math.max(4, Math.round((segLen / upperHeight) * 16));
     const segGeo = new THREE.CylinderGeometry(rEnd, rStart, segLen, radialSegs, segHeightSegs, true);
     const pos = segGeo.attributes.position;
@@ -685,6 +774,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
       uv.setY(vIdx, globalY / upperHeight);
     }
     segGeo.computeVertexNormals();
+    ensureAoUv(segGeo);
 
     const segBarkMat = sIdx === 0 ? barkMat.clone() : barkMat;
     const segBarkMesh = new THREE.Mesh(segGeo, segBarkMat);
@@ -699,6 +789,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     // Bottom end-grain cross-section cap (visible on butt log immediately; revealed on cut for upper logs!)
     const bottomCapGeo = new THREE.CircleGeometry(rStart, radialSegs);
     bottomCapGeo.rotateX(Math.PI / 2);
+    ensureAoUv(bottomCapGeo);
     const bottomCap = new THREE.Mesh(bottomCapGeo, endGrainMat);
     bottomCap.position.set(startCenter.x - midCenter.x, yStart - midCenter.y, startCenter.z - midCenter.z);
     bottomCap.visible = sIdx === 0;
@@ -707,6 +798,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     // Top end-grain cross-section cap (revealed when this segment's upper bucking cut is sliced!)
     const topCapGeo = new THREE.CircleGeometry(rEnd, radialSegs);
     topCapGeo.rotateX(-Math.PI / 2);
+    ensureAoUv(topCapGeo);
     const topCap = new THREE.Mesh(topCapGeo, endGrainMat);
     topCap.position.set(endCenter.x - midCenter.x, yEnd - midCenter.y, endCenter.z - midCenter.z);
     topCap.visible = false;
@@ -756,10 +848,22 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     uBackHalfH: { value: 0.03 },
     uBackTipX: { value: -cutRadius },
   };
-  applyTrunkCutDiscardShader(
-    segments[0].barkMesh.material as THREE.MeshStandardMaterial,
-    cutShaderUniforms
-  );
+  if (quality === 'high') {
+    applyBarkSurfaceShader(
+      segments[0].barkMesh.material as THREE.MeshPhysicalMaterial,
+      {
+        site,
+        weather,
+        mossAffinity: barkProfile.mossAffinity,
+        cutUniforms: cutShaderUniforms,
+      }
+    );
+  } else {
+    applyTrunkCutDiscardShader(
+      segments[0].barkMesh.material as THREE.MeshStandardMaterial,
+      cutShaderUniforms
+    );
+  }
 
   // 3. Humboldt Face Notch (2 clean cylindrical-segment wood faces: flat horizontal ceiling + 47° sloped floor)
   const notchCutoutGroup = new THREE.Group();
@@ -767,16 +871,22 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   notchCutoutGroup.visible = false;
 
   const notchCeilingMat = new THREE.MeshStandardMaterial({
-    map: barkSet.endGrainMap,
-    color: '#b5906a',
+    map: pbrEndGrain.map,
+    normalMap: quality === 'high' ? pbrEndGrain.normalMap : null,
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    roughnessMap: quality === 'high' ? pbrEndGrain.armMap : null,
+    color: new THREE.Color('#c9a47e').lerp(endTint, 0.45),
     roughness: 0.85,
     metalness: 0.02,
     vertexColors: true,
   });
   const notchFloorMat = new THREE.MeshStandardMaterial({
-    map: barkSet.endGrainMap,
-    color: '#f2dec0',
-    roughness: 0.68,
+    map: pbrEndGrain.map,
+    normalMap: quality === 'high' ? pbrEndGrain.normalMap : null,
+    normalScale: new THREE.Vector2(0.55, 0.55),
+    roughnessMap: quality === 'high' ? pbrEndGrain.armMap : null,
+    color: new THREE.Color('#f7e7cc').lerp(endTint, 0.45),
+    roughness: 0.72,
     metalness: 0.02,
     vertexColors: true,
   });
@@ -1502,6 +1612,44 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   selectionRing.rotation.x = -Math.PI / 2;
   selectionRing.position.y = 0.08;
   rootGroup.add(selectionRing);
+
+  // Pool foliage materials per tree for fewer shader compiles & draw switches,
+  // and enable smooth organic lighting + wind vertex sway on High quality!
+  const foliageMatPool = new Map<string, THREE.MeshStandardMaterial>();
+  const isFoliageDescendant = (obj: THREE.Object3D): boolean => {
+    let cur: THREE.Object3D | null = obj.parent;
+    while (cur && cur !== rootGroup) {
+      if (cur.userData?.isFoliage) return true;
+      cur = cur.parent;
+    }
+    return false;
+  };
+
+  rootGroup.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (!isFoliageDescendant(mesh)) return;
+    const orig = mesh.material;
+    if (!(orig instanceof THREE.MeshStandardMaterial)) return;
+    const key = `${orig.color.getHexString()}|${orig.roughness.toFixed(2)}|${orig.metalness.toFixed(2)}`;
+    let pooled = foliageMatPool.get(key);
+    if (!pooled) {
+      pooled = orig;
+      if (quality === 'high') {
+        pooled.flatShading = false;
+        pooled.roughness = Math.max(pooled.roughness, speciesSpec.category === 'conifer' ? 0.85 : 0.78);
+        pooled.envMapIntensity = 0.42;
+        if (options.windUniforms) {
+          applyFoliageWindShader(pooled, options.windUniforms);
+        }
+        pooled.needsUpdate = true;
+      }
+      foliageMatPool.set(key, pooled);
+    } else {
+      orig.dispose();
+      mesh.material = pooled;
+    }
+  });
 
   // Cache unique MeshStandardMaterials for camera-occlusion see-through fading
   const occlusionMaterials: Array<{ mat: THREE.Material; baseOpacity: number }> = [];

@@ -1,6 +1,9 @@
 import * as THREE from 'three';
-import { ContractSpec, HazardSpec, SiteId, WeatherId } from '../types';
+import { ContractSpec, GraphicsQuality, HazardSpec, SiteId, WeatherId } from '../types';
 import { textureCache } from './ProceduralTextures';
+import { ensureAoUv, pbrAssets, SITE_TERRAIN_PROFILES } from './PbrAssetManager';
+import { createWaterShaderMaterial } from './WaterShader';
+import { applyTerrainDetailShader } from './MaterialShaders';
 
 export interface SceneOccluder {
   rootGroup: THREE.Object3D;
@@ -16,8 +19,10 @@ export interface BuiltEnvironment {
   waterMesh?: THREE.Mesh;
   sunLight: THREE.DirectionalLight;
   hemiLight: THREE.HemisphereLight;
+  sunDir: THREE.Vector3;
   skyMesh: THREE.Mesh;
   windAnimatedMeshes: THREE.Object3D[];
+  updateEffects: (elapsed: number, windSpeed: number, windAngle: number) => void;
   updateBackgroundOcclusion: (cameraPos: THREE.Vector3, targetPos: THREE.Vector3, dt: number) => void;
 }
 
@@ -50,6 +55,123 @@ function makeRng(seed: number): () => number {
 }
 
 /**
+ * Natural meandering centerline, organic width, and tangent slope for the Misty Creek stream.
+ * Curves gracefully around the western sapling (-6.5, 11.0) & pasture fence (-6.0, 12.0),
+ * passes right under the rustic footbridge at x ≈ +4.2, and meanders out past the valley fog.
+ */
+export function getMistyCreekCenterZ(x: number): number {
+  const meander =
+    12.2 +
+    Math.sin(x * 0.105 - 0.85) * 3.4 +
+    Math.cos(x * 0.21 + 0.35) * 1.15;
+  // Smooth bend curving south (+Z) around the protected sapling (-6.5, 11.0) & pasture fence (-6.0, 12.0)
+  const dxSap = x - -6.5;
+  const sapAvoid = 9.0 * Math.exp(-(dxSap * dxSap) / (2 * 5.0 * 5.0));
+  return meander + sapAvoid;
+}
+
+export function getMistyCreekHalfWidth(x: number): number {
+  // Wider natural pools on outer bends, narrower riffle crossing at the timber footbridge (x ≈ 4.2)
+  const base = 2.45 + Math.sin(x * 0.15 + 1.0) * 0.5 + Math.cos(x * 0.28 - 0.5) * 0.22;
+  const dxBridge = x - 4.2;
+  const bridgePinch = 0.45 * Math.exp(-(dxBridge * dxBridge) / (2 * 4.5 * 4.5));
+  return Math.max(1.75, base - bridgePinch);
+}
+
+function getMistyCreekSlope(x: number): number {
+  const eps = 0.15;
+  return (getMistyCreekCenterZ(x + eps) - getMistyCreekCenterZ(x - eps)) / (2 * eps);
+}
+
+function isInMistyCreek(x: number, z: number, margin = 0): boolean {
+  const cz = getMistyCreekCenterZ(x);
+  const hw = getMistyCreekHalfWidth(x);
+  return Math.abs(z - cz) < hw + margin;
+}
+
+/**
+ * Natural winding rural gravel lane centerline for Coastal Homestead.
+ * Runs from a rounded gravel turnaround apron near the cabin (z ≈ -8.2)
+ * through gentle S-bends all the way out past the forested horizon (z = +118).
+ */
+function getHomesteadDrivewayBaseX(z: number): number {
+  const nearCurve = Math.sin((z + 2.5) * 0.205) * 2.0;
+  const outerMeander =
+    Math.sin((z - 18.0) * 0.056) * 5.2 * THREE.MathUtils.smoothstep(z, 14, 42);
+  return -0.15 + nearCurve + outerMeander;
+}
+
+interface HomesteadDrivewayCurve {
+  centerX: (z: number) => number;
+  halfWidth: (z: number) => number;
+  slope: (z: number) => number;
+  zMin: number;
+  zMax: number;
+  isOnDriveway: (x: number, z: number, margin?: number) => boolean;
+}
+
+function createHomesteadDrivewayCurve(contract: ContractSpec): HomesteadDrivewayCurve {
+  // Smoothly curve around any standing contract tree that sits close to the base lane
+  const treeBends: Array<{ z0: number; amp: number; sigma: number }> = [];
+  for (const t of contract.trees) {
+    if (t.z < -12 || t.z > 28) continue;
+    const bx = getHomesteadDrivewayBaseX(t.z);
+    const dx = t.x - bx;
+    if (Math.abs(dx) < 3.5) {
+      // Deflect cleanly to the clearer side of the tree trunk
+      const dir = dx > 0.25 ? -1 : 1;
+      const needed = 3.85 - Math.abs(dx);
+      treeBends.push({ z0: t.z, amp: dir * needed, sigma: 5.2 });
+    }
+  }
+
+  const zMin = -11.4;
+  const zMax = 118;
+
+  const centerX = (z: number): number => {
+    let x = getHomesteadDrivewayBaseX(z);
+    for (const b of treeBends) {
+      const dz = z - b.z0;
+      x += b.amp * Math.exp(-(dz * dz) / (2 * b.sigma * b.sigma));
+    }
+    return x;
+  };
+
+  const halfWidth = (z: number): number => {
+    if (z < zMin) return 0;
+    // Rounded teardrop gravel turnaround apron near the cabin (z ∈ [-11.4, -4.5])
+    const baseLane = 2.15 + Math.sin(z * 0.11 + 0.6) * 0.22;
+    const dzApron = z - -8.0;
+    const apronFlare = 1.45 * Math.exp(-(dzApron * dzApron) / (2 * 2.5 * 2.5));
+    const rawW = baseLane + apronFlare;
+    // Smooth semicircular cap closing the north end of the turnaround apron (no flat rectangle!)
+    if (z < -8.2) {
+      const capT = THREE.MathUtils.clamp((-8.2 - z) / (-8.2 - zMin), 0, 1);
+      return rawW * Math.sqrt(Math.max(0, 1 - capT * capT));
+    }
+    return rawW;
+  };
+
+  const slope = (z: number): number => {
+    const eps = 0.2;
+    return (centerX(z + eps) - centerX(z - eps)) / (2 * eps);
+  };
+
+  const isOnDriveway = (x: number, z: number, margin = 0): boolean => {
+    if (z < zMin - margin || z > zMax) return false;
+    const hw = halfWidth(Math.max(z, zMin + 0.05));
+    if (z < zMin) {
+      // Circular margin check around the north turnaround cap
+      const capX = centerX(-8.2);
+      return Math.hypot(x - capX, z - -8.2) < halfWidth(-8.2) + margin;
+    }
+    return Math.abs(x - centerX(z)) < hw + margin;
+  };
+
+  return { centerX, halfWidth, slope, zMin, zMax, isOnDriveway };
+}
+
+/**
  * Computes terrain elevation at world (x, z).
  * Central 24m radius is level (0m) for crisp tree felling & structures,
  * transitioning smoothly into undulating coastal PNW forested hills!
@@ -57,10 +179,31 @@ function makeRng(seed: number): () => number {
 export function getTerrainHeight(x: number, z: number, site: SiteId): number {
   const dist = Math.hypot(x, z);
   const flatRadius = site === 'coastal_town' ? 27 : 23;
-  if (dist <= flatRadius) return 0;
 
-  const t = Math.min(1, (dist - flatRadius) / 42);
+  const t = Math.min(1, Math.max(0, (dist - flatRadius) / 42));
   const smooth = t * t * (3 - 2 * t);
+
+  if (site === 'misty_creek') {
+    const cz = getMistyCreekCenterZ(x);
+    const hw = getMistyCreekHalfWidth(x);
+    const perpDist = Math.abs(z - cz);
+    const bankU = perpDist / hw;
+    // Gently carve the outer valley hills down along the meandering creek corridor
+    const valleyMask = THREE.MathUtils.smoothstep(bankU, 1.35, 3.6);
+    const ridgeNoise =
+      Math.sin(x * 0.045 + 0.5) * Math.cos(z * 0.04 - 0.3) * 7.5 +
+      Math.sin(x * 0.11 - z * 0.08) * 2.6 +
+      Math.cos(dist * 0.06) * 2.2;
+    const hillY = dist <= flatRadius ? 0 : smooth * valleyMask * (6.2 + ridgeNoise * 0.85);
+    // Carve a natural submerged riverbed trough beneath the meandering waterline
+    if (bankU < 1.6) {
+      const k = 1 - THREE.MathUtils.smoothstep(bankU, 0.25, 1.6);
+      return hillY - 0.56 * k;
+    }
+    return hillY;
+  }
+
+  if (dist <= flatRadius) return 0;
 
   const ridgeNoise =
     Math.sin(x * 0.045 + 0.5) * Math.cos(z * 0.04 - 0.3) * 7.5 +
@@ -90,18 +233,34 @@ export function getTerrainHeight(x: number, z: number, site: SiteId): number {
     const valleyDip = x > 8 && z < -6 ? -3.4 * smooth : 0;
     return Math.max(-2.5, smooth * (7.2 + rollingHills) + valleyDip);
   }
-  if (site === 'misty_creek') {
-    return smooth * (6.2 + ridgeNoise * 0.85);
-  }
   if (site === 'coastal_town') {
     // Keep the east-west town street level while wooded hills rise gently behind the neighborhood
     const roadKeepFlat = Math.abs(z - 16.5) < 9 ? 0.15 : 1.0;
     return smooth * roadKeepFlat * (4.2 + ridgeNoise * 0.58);
   }
+  if (site === 'coastal_homestead') {
+    // Gently grade the winding rural driveway corridor into the outer forested hillside
+    const laneDist = z > 12 ? Math.abs(x - getHomesteadDrivewayBaseX(z)) : 99;
+    const laneGrade = THREE.MathUtils.smoothstep(laneDist, 2.4, 8.5);
+    return smooth * (0.28 + 0.72 * laneGrade) * (5.2 + ridgeNoise * 0.72);
+  }
   return smooth * (5.2 + ridgeNoise * 0.72);
 }
 
-function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE.Vector3; fogColor: number; fogDensity: number } {
+function createSkyDome(
+  weather: WeatherId,
+  site: SiteId,
+  quality: GraphicsQuality
+): {
+  skyMesh: THREE.Mesh;
+  sunDir: THREE.Vector3;
+  fogColor: number;
+  fogDensity: number;
+  skyTop: THREE.Color;
+  skyHorizon: THREE.Color;
+  sunColor: THREE.Color;
+  updateSky: (elapsed: number, windSpeed: number) => void;
+} {
   const palettes: Record<
     WeatherId,
     {
@@ -113,10 +272,13 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       sunGlow: number;
       fog: number;
       density: number;
+      cloudCover: number;
+      cloudTint: string;
+      cloudDark: string;
     }
   > = {
     sunny_morning: {
-      top: '#3b7bb8',
+      top: site === 'kootenay_rockies' ? '#2c6eb3' : '#3b7bb8',
       mid: '#7fb3d5',
       horizon: '#d8e9df',
       sun: '#fff4cf',
@@ -124,6 +286,9 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       sunGlow: 1.0,
       fog: 0xcde0d8,
       density: 0.0072,
+      cloudCover: site === 'kootenay_rockies' ? 0.24 : 0.36,
+      cloudTint: '#ffffff',
+      cloudDark: '#a8c2d6',
     },
     misty_fog: {
       top: '#5e7884',
@@ -134,6 +299,9 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       sunGlow: 0.55,
       fog: 0xbfcfcc,
       density: 0.0125,
+      cloudCover: 0.68,
+      cloudTint: '#e3ece9',
+      cloudDark: '#8ea3a8',
     },
     light_rain: {
       top: '#3d4f59',
@@ -144,6 +312,9 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       sunGlow: 0.22,
       fog: 0x899ea1,
       density: 0.0118,
+      cloudCover: 0.86,
+      cloudTint: '#b4c4c9',
+      cloudDark: '#596b73',
     },
     golden_hour: {
       top: '#2e4e72',
@@ -154,6 +325,9 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       sunGlow: 1.05,
       fog: 0xd9bfa0,
       density: 0.0085,
+      cloudCover: 0.48,
+      cloudTint: '#ffd8a3',
+      cloudDark: '#6c6878',
     },
     coastal_gale: {
       top: '#384c59',
@@ -164,23 +338,35 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       sunGlow: 0.45,
       fog: 0x93a7ac,
       density: 0.011,
+      cloudCover: 0.78,
+      cloudTint: '#c8d6da',
+      cloudDark: '#556772',
     },
   };
 
   const p = palettes[weather];
   const sunDir = new THREE.Vector3(...p.sunPos).normalize();
+  const skyTop = new THREE.Color(p.top);
+  const skyHorizon = new THREE.Color(p.horizon);
+  const sunColor = new THREE.Color(p.sun);
+
+  const uniforms = {
+    uTop: { value: skyTop.clone() },
+    uMid: { value: new THREE.Color(p.mid) },
+    uHorizon: { value: skyHorizon.clone() },
+    uSunColor: { value: sunColor.clone() },
+    uSunDir: { value: sunDir },
+    uSunGlow: { value: p.sunGlow },
+    uTime: { value: 0 },
+    uCloudCover: { value: quality === 'high' ? p.cloudCover : 0.0 },
+    uCloudTint: { value: new THREE.Color(p.cloudTint) },
+    uCloudDark: { value: new THREE.Color(p.cloudDark) },
+  };
 
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
-    uniforms: {
-      uTop: { value: new THREE.Color(p.top) },
-      uMid: { value: new THREE.Color(p.mid) },
-      uHorizon: { value: new THREE.Color(p.horizon) },
-      uSunColor: { value: new THREE.Color(p.sun) },
-      uSunDir: { value: sunDir },
-      uSunGlow: { value: p.sunGlow },
-    },
+    uniforms,
     vertexShader: `
       varying vec3 vWorldPos;
       void main() {
@@ -196,37 +382,133 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       uniform vec3 uSunColor;
       uniform vec3 uSunDir;
       uniform float uSunGlow;
+      uniform float uTime;
+      uniform float uCloudCover;
+      uniform vec3 uCloudTint;
+      uniform vec3 uCloudDark;
       varying vec3 vWorldPos;
+
+      float sHash(vec2 p) {
+        p = fract(p * vec2(127.1, 311.7));
+        p += dot(p, p + 19.19);
+        return fract(p.x * p.y);
+      }
+      float sNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(sHash(i), sHash(i + vec2(1.0, 0.0)), u.x),
+          mix(sHash(i + vec2(0.0, 1.0)), sHash(i + vec2(1.0, 1.0)), u.x),
+          u.y
+        );
+      }
+      float fbmCloud(vec2 p) {
+        float v = 0.0;
+        float a = 0.5;
+        mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+        for (int i = 0; i < 4; i++) {
+          v += a * sNoise(p);
+          p = rot * p * 2.04;
+          a *= 0.5;
+        }
+        return v;
+      }
+
       void main() {
         vec3 dir = normalize(vWorldPos);
         float h = clamp(dir.y, 0.0, 1.0);
         vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.28, h));
         col = mix(col, uTop, smoothstep(0.25, 0.85, h));
-        float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        float sunHalo = (pow(sunDot, 12.0) * 0.35 + pow(sunDot, 180.0) * 0.9) * uSunGlow;
+
+        vec3 sunD = normalize(uSunDir);
+        float sunDot = clamp(dot(dir, sunD), 0.0, 1.0);
+        float sd = max(sunDot, 1e-4);
+        float sunHalo = (pow(sd, 12.0) * 0.35 + pow(sd, 180.0) * 1.15) * uSunGlow * step(1e-3, sunDot);
         col += uSunColor * sunHalo;
+
+        // Procedural drifting volumetric-look sky clouds on High detail
+        if (uCloudCover > 0.02 && dir.y > 0.02) {
+          vec2 uv = dir.xz / (dir.y + 0.22);
+          float c1 = fbmCloud(uv * 1.15 + vec2(uTime * 0.012, uTime * 0.005));
+          float c2 = fbmCloud(uv * 2.4 - vec2(uTime * 0.018, -uTime * 0.009));
+          float density = smoothstep(1.0 - uCloudCover * 0.92, 0.92, c1 * 0.72 + c2 * 0.35);
+          float horizonFade = smoothstep(0.02, 0.22, dir.y);
+          // Silver-lining Henyey-Greenstein style forward scatter near sun
+          float silver = (sunDot > 1e-4 ? pow(sunDot, 6.0) : 0.0) * 0.55 * uSunGlow;
+          vec3 cloudCol = mix(uCloudDark, uCloudTint, clamp(c2 * 0.85 + 0.25, 0.0, 1.0)) + uSunColor * silver;
+          col = mix(col, cloudCol, density * horizonFade * 0.78);
+        }
+
         gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
 
   const skyMesh = new THREE.Mesh(new THREE.SphereGeometry(220, 32, 20), skyMat);
-  return { skyMesh, sunDir, fogColor: p.fog, fogDensity: p.density };
+  return {
+    skyMesh,
+    sunDir,
+    fogColor: p.fog,
+    fogDensity: p.density,
+    skyTop,
+    skyHorizon,
+    sunColor,
+    updateSky: (elapsed: number, windSpeed: number) => {
+      uniforms.uTime.value = elapsed * (0.65 + windSpeed * 1.6);
+    },
+  };
 }
 
-function buildCabin(): THREE.Group {
+function createWoodPbrMat(
+  tint: string,
+  quality: GraphicsQuality,
+  repeatX = 2,
+  repeatY = 2,
+  roughness = 0.88
+): THREE.MeshStandardMaterial {
+  const pbr = pbrAssets.getPbrSet('wood_planks', quality, { repeatX, repeatY });
+  return new THREE.MeshStandardMaterial({
+    map: pbr.map,
+    normalMap: pbr.normalMap,
+    normalScale: new THREE.Vector2(quality === 'high' ? 0.95 : 0.65, quality === 'high' ? 0.95 : 0.65),
+    roughnessMap: quality === 'high' ? pbr.armMap : null,
+    color: new THREE.Color(tint),
+    roughness,
+    metalness: 0.02,
+  });
+}
+
+function createStonePbrMat(
+  tint: string,
+  quality: GraphicsQuality,
+  repeatX = 2,
+  repeatY = 2
+): THREE.MeshStandardMaterial {
+  const pbr = pbrAssets.getPbrSet('mossy_rock', quality, { repeatX, repeatY });
+  return new THREE.MeshStandardMaterial({
+    map: pbr.map,
+    normalMap: pbr.normalMap,
+    normalScale: new THREE.Vector2(quality === 'high' ? 1.15 : 0.75, quality === 'high' ? 1.15 : 0.75),
+    roughnessMap: quality === 'high' ? pbr.armMap : null,
+    color: new THREE.Color(tint),
+    roughness: 0.94,
+    metalness: 0.02,
+  });
+}
+
+function buildCabin(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
-  const cedarTex = textureCache.getWoodPlankTexture('#7b4d31', 12);
-  const wallMat = new THREE.MeshStandardMaterial({ map: cedarTex, roughness: 0.86 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: '#39463b', roughness: 0.9, flatShading: true });
+  const wallMat = createWoodPbrMat('#a8724e', quality, 3, 2, 0.86);
+  const roofMat = new THREE.MeshStandardMaterial({ color: '#39463b', roughness: 0.9, flatShading: quality !== 'high' });
   const trimMat = new THREE.MeshStandardMaterial({ color: '#d9cbb8', roughness: 0.75 });
   const windowMat = new THREE.MeshStandardMaterial({
     color: '#ffe194',
     emissive: '#f59e0b',
-    emissiveIntensity: 0.65,
-    roughness: 0.2,
+    emissiveIntensity: quality === 'high' ? 1.32 : 0.65,
+    roughness: 0.16,
   });
-  const stoneMat = new THREE.MeshStandardMaterial({ color: '#6b6f6c', roughness: 0.95, flatShading: true });
+  const stoneMat = createStonePbrMat('#9aa09a', quality, 2, 3);
 
   // Main cabin body
   const body = new THREE.Mesh(new THREE.BoxGeometry(8.2, 3.8, 6.2), wallMat);
@@ -289,31 +571,25 @@ function buildCabin(): THREE.Group {
   return g;
 }
 
-function buildAFrame(): THREE.Group {
+function buildAFrame(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
-  const timberTex = textureCache.getWoodPlankTexture('#8c5a36', 10);
-  const deckTex = textureCache.getWoodPlankTexture('#9c6f46', 8);
-  const timberMat = new THREE.MeshStandardMaterial({ map: timberTex, roughness: 0.84 });
-  const deckMat = new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.88 });
+  const timberMat = createWoodPbrMat('#b88255', quality, 2, 2, 0.84);
+  const deckMat = createWoodPbrMat('#c5986d', quality, 3, 3, 0.88);
   const roofMat = new THREE.MeshStandardMaterial({
     color: '#2c3538',
-    roughness: 0.62,
-    metalness: 0.3,
-    flatShading: true,
+    roughness: 0.56,
+    metalness: 0.34,
+    flatShading: quality !== 'high',
   });
   const trimMat = new THREE.MeshStandardMaterial({ color: '#3b281c', roughness: 0.82 });
   const glassMat = new THREE.MeshStandardMaterial({
     color: '#ffe8ad',
     emissive: '#f59e0b',
-    emissiveIntensity: 0.62,
-    roughness: 0.16,
+    emissiveIntensity: quality === 'high' ? 1.25 : 0.62,
+    roughness: 0.14,
     metalness: 0.18,
   });
-  const stoneMat = new THREE.MeshStandardMaterial({
-    color: '#8b887e',
-    roughness: 0.94,
-    flatShading: true,
-  });
+  const stoneMat = createStonePbrMat('#beb9ab', quality, 2, 4);
 
   // Elevated cedar foundation deck (wraps out to a mountain view porch in front)
   const deck = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.45, 9.6), deckMat);
@@ -413,12 +689,11 @@ function buildAFrame(): THREE.Group {
   return g;
 }
 
-function buildBarn(): THREE.Group {
+function buildBarn(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
-  const redTex = textureCache.getWoodPlankTexture('#8c3027', 12);
-  const barnMat = new THREE.MeshStandardMaterial({ map: redTex, roughness: 0.88 });
+  const barnMat = createWoodPbrMat('#b5463b', quality, 3, 2, 0.88);
   const trimMat = new THREE.MeshStandardMaterial({ color: '#ebe4d8', roughness: 0.75 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: '#4b555a', roughness: 0.65, metalness: 0.25 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: '#4b555a', roughness: 0.58, metalness: 0.3 });
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(9.2, 4.4, 6.6), barnMat);
   body.position.y = 2.2;
@@ -452,11 +727,10 @@ function buildBarn(): THREE.Group {
   return g;
 }
 
-function buildWoodshed(): THREE.Group {
+function buildWoodshed(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
-  const plankTex = textureCache.getWoodPlankTexture('#6f4a2e', 8);
-  const woodMat = new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.9 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: '#4c5750', roughness: 0.72, metalness: 0.2 });
+  const woodMat = createWoodPbrMat('#9e724e', quality, 2, 2, 0.9);
+  const roofMat = new THREE.MeshStandardMaterial({ color: '#4c5750', roughness: 0.68, metalness: 0.24 });
 
   // Back & side walls
   const back = new THREE.Mesh(new THREE.BoxGeometry(4.4, 2.6, 0.2), woodMat);
@@ -540,10 +814,10 @@ function buildPickupTruck(): THREE.Group {
   return g;
 }
 
-function buildGazebo(): THREE.Group {
+function buildGazebo(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
-  const cedarMat = new THREE.MeshStandardMaterial({ color: '#7d5235', roughness: 0.85 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: '#3b4a42', roughness: 0.88, flatShading: true });
+  const cedarMat = createWoodPbrMat('#ad7b54', quality, 2, 2, 0.85);
+  const roofMat = new THREE.MeshStandardMaterial({ color: '#3b4a42', roughness: 0.88, flatShading: quality !== 'high' });
 
   const deck = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.4, 0.45, 8), cedarMat);
   deck.position.y = 0.22;
@@ -862,14 +1136,14 @@ function buildStationWagon(): THREE.Group {
   return g;
 }
 
-function buildHazardMesh(h: HazardSpec): THREE.Group {
+function buildHazardMesh(h: HazardSpec, quality: GraphicsQuality): THREE.Group {
   let g: THREE.Group;
   switch (h.type) {
     case 'cabin':
-      g = buildCabin();
+      g = buildCabin(quality);
       break;
     case 'aframe':
-      g = buildAFrame();
+      g = buildAFrame(quality);
       break;
     case 'house':
       g = buildCoastalHouse();
@@ -884,16 +1158,16 @@ function buildHazardMesh(h: HazardSpec): THREE.Group {
       g = buildStationWagon();
       break;
     case 'barn':
-      g = buildBarn();
+      g = buildBarn(quality);
       break;
     case 'shed':
-      g = buildWoodshed();
+      g = buildWoodshed(quality);
       break;
     case 'truck':
       g = buildPickupTruck();
       break;
     case 'gazebo':
-      g = buildGazebo();
+      g = buildGazebo(quality);
       break;
     case 'powerline':
       g = buildPowerPole();
@@ -1004,20 +1278,28 @@ function buildBunchgrassGeometry(): THREE.BufferGeometry {
 
 export function buildEnvironment(
   scene: THREE.Scene,
-  contract: ContractSpec
+  contract: ContractSpec,
+  quality: GraphicsQuality = 'high'
 ): BuiltEnvironment {
   const group = new THREE.Group();
   const rand = makeRng(contract.index * 7919 + 1337);
   const windAnimatedMeshes: THREE.Object3D[] = [];
+  const effectUpdaters: Array<(elapsed: number, windSpeed: number, windAngle: number) => void> = [];
 
   // 1. Sky Dome + Regional Fog (crisp dry air in the Rockies so distant peaks read clearly)
-  const { skyMesh, sunDir, fogColor, fogDensity } = createSkyDome(contract.weather);
+  const { skyMesh, sunDir, fogColor, fogDensity, skyTop, skyHorizon, sunColor, updateSky } =
+    createSkyDome(contract.weather, contract.site, quality);
   group.add(skyMesh);
+  effectUpdaters.push((elapsed, windSpeed) => updateSky(elapsed, windSpeed));
   const fogScale = contract.site === 'kootenay_rockies' ? 0.56 : 0.88;
-  scene.fog = new THREE.FogExp2(fogColor, fogDensity * fogScale);
+  const effectiveFogDensity = fogDensity * fogScale;
+  scene.fog = new THREE.FogExp2(fogColor, effectiveFogDensity);
   scene.background = new THREE.Color(fogColor);
 
   // 2. Lighting Setup (Crisp Pacific Northwest sun + lush mossy bounce + sky fill)
+  // On High detail, HDRI PMREM environment lighting supplies nuanced sky/ground bounce, so we
+  // gently taper hemi fill so direct sun shadows keep dramatic AAA contrast!
+  const hemiScale = quality === 'high' ? 0.72 : 1.0;
   const hemiColors: Record<WeatherId, [number, number, number]> = {
     sunny_morning: [0xd4ecff, 0x4f6e3f, 1.25],
     misty_fog: [0xdbe7ea, 0x4b6346, 1.3],
@@ -1026,22 +1308,23 @@ export function buildEnvironment(
     coastal_gale: [0xb4cad6, 0x3e543f, 1.2],
   };
   const [skyCol, groundCol, hemiInt] = hemiColors[contract.weather];
-  const hemiLight = new THREE.HemisphereLight(skyCol, groundCol, hemiInt);
+  const hemiLight = new THREE.HemisphereLight(skyCol, groundCol, hemiInt * hemiScale);
   group.add(hemiLight);
 
   const sunColors: Record<WeatherId, [number, number]> = {
-    sunny_morning: [0xfff6dc, 2.35],
-    misty_fog: [0xf4f7f0, 1.65],
-    light_rain: [0xd3e2e8, 1.28],
-    golden_hour: [0xffc67d, 2.55],
-    coastal_gale: [0xe3eef2, 1.65],
+    sunny_morning: [0xfff6dc, 2.45],
+    misty_fog: [0xf4f7f0, 1.7],
+    light_rain: [0xd3e2e8, 1.32],
+    golden_hour: [0xffc67d, 2.75],
+    coastal_gale: [0xe3eef2, 1.7],
   };
   const [sunCol, sunInt] = sunColors[contract.weather];
   const sunLight = new THREE.DirectionalLight(sunCol, sunInt);
   sunLight.position.copy(sunDir).multiplyScalar(68);
   sunLight.castShadow = true;
-  sunLight.shadow.mapSize.width = 2048;
-  sunLight.shadow.mapSize.height = 2048;
+  const shadowRes = quality === 'high' ? 4096 : 2048;
+  sunLight.shadow.mapSize.width = shadowRes;
+  sunLight.shadow.mapSize.height = shadowRes;
   sunLight.shadow.camera.near = 10;
   sunLight.shadow.camera.far = 160;
   const shadowExtent = 38;
@@ -1049,35 +1332,23 @@ export function buildEnvironment(
   sunLight.shadow.camera.right = shadowExtent;
   sunLight.shadow.camera.top = shadowExtent;
   sunLight.shadow.camera.bottom = -shadowExtent;
-  sunLight.shadow.bias = -0.0005;
+  sunLight.shadow.bias = quality === 'high' ? -0.00035 : -0.0005;
+  sunLight.shadow.normalBias = quality === 'high' ? 0.032 : 0.015;
   group.add(sunLight);
 
   // Soft opposite rim/fill light so shaded bark & evergreen needles stay rich and readable
   const fillLight = new THREE.DirectionalLight(
     contract.weather === 'light_rain' ? 0x99b8c6 : 0xaad0e6,
-    contract.weather === 'light_rain' ? 0.64 : 0.52
+    (contract.weather === 'light_rain' ? 0.64 : 0.52) * (quality === 'high' ? 0.8 : 1.0)
   );
   fillLight.position.copy(sunDir).multiplyScalar(-45);
   fillLight.position.y = 26;
   group.add(fillLight);
 
-  // 3. Undulating Coastal PNW Terrain
-  const terrainStyle =
-    contract.site === 'coastal_homestead'
-      ? 'homestead'
-      : contract.site === 'misty_creek'
-        ? 'creek'
-        : contract.site === 'timber_ridge'
-          ? 'ridge'
-          : contract.site === 'coastal_town'
-            ? 'suburban'
-            : contract.site === 'pacific_headland'
-              ? 'headland'
-              : contract.site === 'kootenay_rockies'
-                ? 'kootenay'
-                : 'bluff';
-
-  const terrainGeo = new THREE.PlaneGeometry(240, 240, 96, 96);
+  // 3. Undulating Coastal PNW / Rockies Terrain with real CC0 PBR scans + anti-tiling shader
+  const terrainProfile = SITE_TERRAIN_PROFILES[contract.site];
+  const terrainSegs = quality === 'high' ? 128 : 96;
+  const terrainGeo = new THREE.PlaneGeometry(240, 240, terrainSegs, terrainSegs);
   terrainGeo.rotateX(-Math.PI / 2);
   const tPos = terrainGeo.attributes.position;
   for (let i = 0; i < tPos.count; i++) {
@@ -1086,75 +1357,557 @@ export function buildEnvironment(
     tPos.setY(i, getTerrainHeight(x, z, contract.site));
   }
   terrainGeo.computeVertexNormals();
+  ensureAoUv(terrainGeo);
 
-  const terrainMat = new THREE.MeshStandardMaterial({
-    map: textureCache.getTerrainTexture(terrainStyle),
-    roughness: contract.weather === 'light_rain' ? 0.72 : 0.94,
-    metalness: contract.weather === 'light_rain' ? 0.06 : 0.02,
+  const terrainPbr = pbrAssets.getPbrSet(terrainProfile.textureId, quality, {
+    repeatX: terrainProfile.repeat,
+    repeatY: terrainProfile.repeat,
   });
+  const isWetWeather = contract.weather === 'light_rain' || contract.weather === 'coastal_gale';
+  const terrainMat = new THREE.MeshStandardMaterial({
+    map: terrainPbr.map,
+    normalMap: terrainPbr.normalMap,
+    normalScale: new THREE.Vector2(
+      terrainProfile.normalScale * (quality === 'high' ? 1.0 : 0.72),
+      terrainProfile.normalScale * (quality === 'high' ? 1.0 : 0.72)
+    ),
+    roughnessMap: quality === 'high' ? terrainPbr.armMap : null,
+    aoMap: quality === 'high' ? terrainPbr.armMap : null,
+    aoMapIntensity: terrainProfile.aoIntensity,
+    color: new THREE.Color(terrainProfile.tint),
+    roughness: isWetWeather ? Math.max(0.68, terrainProfile.roughness - 0.18) : terrainProfile.roughness,
+    metalness: isWetWeather ? 0.05 : 0.02,
+  });
+  if (quality === 'high') {
+    applyTerrainDetailShader(terrainMat, contract.site, contract.weather);
+  }
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
   terrainMesh.receiveShadow = true;
   terrainMesh.userData = { part: 'ground' };
   group.add(terrainMesh);
 
   // 4. Site-Specific Landmarks (Driveway, Creek, Nurse Logs, Distant Inlet)
+  const homesteadDriveway =
+    contract.site === 'coastal_homestead' ? createHomesteadDrivewayCurve(contract) : null;
   let waterMesh: THREE.Mesh | undefined;
-
-  if (contract.site === 'coastal_homestead') {
-    // Textured coastal river-gravel driveway with grassy edges
-    const gravelMat = new THREE.MeshStandardMaterial({
-      map: textureCache.getGravelTexture(),
-      roughness: 0.95,
+  const makeWaterMat = (fallbackHex: string, opacity: number, roughness: number) => {
+    if (quality === 'high') {
+      const animWater = createWaterShaderMaterial({
+        site: contract.site,
+        weather: contract.weather,
+        sunDir,
+        sunColor,
+        skyHorizon,
+        skyZenith: skyTop,
+        fogColor: new THREE.Color(fogColor),
+        fogDensity: effectiveFogDensity,
+        windSpeed: contract.windSpeed,
+      });
+      effectUpdaters.push((elapsed) => animWater.update(elapsed));
+      return animWater.material;
+    }
+    return new THREE.MeshStandardMaterial({
+      color: fallbackHex,
+      roughness,
+      metalness: 0.48,
+      transparent: opacity < 0.99,
+      opacity,
     });
-    const drive = new THREE.Mesh(new THREE.PlaneGeometry(5.2, 34), gravelMat);
-    drive.rotation.x = -Math.PI / 2;
-    drive.rotation.z = -0.18;
-    drive.position.set(1.2, 0.03, 12.5);
+  };
+
+  if (contract.site === 'coastal_homestead' && homesteadDriveway) {
+    // Winding rural PNW gravel lane with rounded homestead turnaround, compacted wheel ruts,
+    // alpha-feathered mossy gravel verges, river-cobble curb edges, and rustic cedar bollards
+    const dSlices = quality === 'high' ? 148 : 104;
+    // Cross-section from west mossy verge -> compacted gravel wheel tracks -> crowned center -> east verge
+    const dProfile: Array<{
+      wMult: number;
+      yLift: number;
+      alpha: number;
+      col: [number, number, number];
+    }> = [
+      { wMult: -1.36, yLift: 0.014, alpha: 0.0, col: [0.58, 0.59, 0.48] }, // feathered outer mossy verge
+      { wMult: -1.04, yLift: 0.028, alpha: 0.82, col: [0.74, 0.72, 0.62] }, // loose gravel shoulder
+      { wMult: -0.78, yLift: 0.036, alpha: 1.0, col: [0.85, 0.83, 0.76] }, // outer lane gravel
+      { wMult: -0.44, yLift: 0.032, alpha: 1.0, col: [0.76, 0.74, 0.68] }, // compacted west wheel track
+      { wMult: 0.0, yLift: 0.044, alpha: 1.0, col: [0.82, 0.82, 0.72] }, // slightly mossy crowned center ridge
+      { wMult: 0.44, yLift: 0.032, alpha: 1.0, col: [0.76, 0.74, 0.68] }, // compacted east wheel track
+      { wMult: 0.78, yLift: 0.036, alpha: 1.0, col: [0.85, 0.83, 0.76] }, // outer lane gravel
+      { wMult: 1.04, yLift: 0.028, alpha: 0.82, col: [0.74, 0.72, 0.62] }, // loose gravel shoulder
+      { wMult: 1.36, yLift: 0.014, alpha: 0.0, col: [0.58, 0.59, 0.48] }, // feathered outer mossy verge
+    ];
+    const dCols = dProfile.length;
+    const dPos: number[] = [];
+    const dUvs: number[] = [];
+    const dColors: number[] = [];
+    const dAlphas: number[] = [];
+    const dIndices: number[] = [];
+
+    // Sample more densely around the curved north turnaround cap so the rounded cul-de-sac is buttery smooth
+    const zSamples: number[] = [];
+    const capSlices = 18;
+    for (let i = 0; i < capSlices; i++) {
+      const t = i / capSlices;
+      // Cosine spacing concentrates slices right around the semicircular tip at zMin
+      const z = homesteadDriveway.zMin + (1 - Math.cos(t * Math.PI * 0.5)) * (-4.5 - homesteadDriveway.zMin);
+      zSamples.push(z);
+    }
+    const mainSlices = dSlices - capSlices;
+    for (let i = 0; i <= mainSlices; i++) {
+      const t = i / mainSlices;
+      zSamples.push(-4.5 + (homesteadDriveway.zMax - -4.5) * t);
+    }
+
+    let dArc = 0;
+    let prevDx = homesteadDriveway.centerX(zSamples[0]);
+    let prevDz = zSamples[0];
+
+    for (let i = 0; i < zSamples.length; i++) {
+      const cz = zSamples[i];
+      const cx = homesteadDriveway.centerX(cz);
+      const hw = homesteadDriveway.halfWidth(cz);
+      const sl = homesteadDriveway.slope(cz);
+      if (i > 0) {
+        dArc += Math.hypot(cx - prevDx, cz - prevDz);
+      }
+      prevDx = cx;
+      prevDz = cz;
+
+      // Tangent along +Z is (sl, 1); perpendicular pointing east (+X) is (1, -sl) / hypot(1, sl)
+      const invL = 1 / Math.hypot(1, sl);
+      const nx = 1 * invL;
+      const nz = -sl * invL;
+      // Softly feather the semicircular north turnaround tip as well
+      const tipFade = THREE.MathUtils.smoothstep(cz, homesteadDriveway.zMin, homesteadDriveway.zMin + 0.55);
+
+      for (let j = 0; j < dCols; j++) {
+        const dp = dProfile[j];
+        const off = dp.wMult * hw;
+        const px = cx + nx * off;
+        const pz = cz + nz * off;
+        const groundY = getTerrainHeight(px, pz, contract.site);
+        dPos.push(px, groundY + dp.yLift, pz);
+        dUvs.push((dp.wMult * 0.5 + 0.5) * 1.4, dArc * 0.28);
+        dColors.push(dp.col[0], dp.col[1], dp.col[2]);
+        dAlphas.push(dp.alpha * tipFade);
+      }
+
+      if (i < zSamples.length - 1) {
+        const r0 = i * dCols;
+        const r1 = (i + 1) * dCols;
+        for (let j = 0; j < dCols - 1; j++) {
+          // +X (j) x +Z (i) gives -Y, so wind (r0+j, r1+j, r0+j+1) for +Y upward normal
+          dIndices.push(r0 + j, r1 + j, r0 + j + 1);
+          dIndices.push(r0 + j + 1, r1 + j, r1 + j + 1);
+        }
+      }
+    }
+
+    const driveGeo = new THREE.BufferGeometry();
+    driveGeo.setAttribute('position', new THREE.Float32BufferAttribute(dPos, 3));
+    driveGeo.setAttribute('uv', new THREE.Float32BufferAttribute(dUvs, 2));
+    driveGeo.setAttribute('color', new THREE.Float32BufferAttribute(dColors, 3));
+    driveGeo.setAttribute('aVergeAlpha', new THREE.Float32BufferAttribute(dAlphas, 1));
+    driveGeo.setIndex(dIndices);
+    driveGeo.computeVertexNormals();
+    ensureAoUv(driveGeo);
+
+    const gravelPbr = pbrAssets.getPbrSet('gravel_road', quality, { repeatX: 1, repeatY: 1 });
+    const gravelMat = new THREE.MeshStandardMaterial({
+      map: gravelPbr.map,
+      normalMap: gravelPbr.normalMap,
+      normalScale: new THREE.Vector2(quality === 'high' ? 0.78 : 0.62, quality === 'high' ? 0.78 : 0.62),
+      roughnessMap: quality === 'high' ? gravelPbr.armMap : null,
+      color: new THREE.Color(isWetWeather ? '#a2a098' : '#cec7b8'),
+      vertexColors: true,
+      roughness: isWetWeather ? 0.78 : 0.94,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    gravelMat.customProgramCacheKey = () => 'homestead-driveway-verge-v1';
+    gravelMat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          attribute float aVergeAlpha;
+          varying float vVergeAlpha;
+          varying vec3 vDriveWorldPos;`
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          vVergeAlpha = aVergeAlpha;`
+        )
+        .replace(
+          '#include <worldpos_vertex>',
+          `#include <worldpos_vertex>
+          vDriveWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          varying float vVergeAlpha;
+          varying vec3 vDriveWorldPos;
+          float dHash(vec2 p) {
+            p = fract(p * vec2(127.1, 311.7));
+            p += dot(p, p + 19.19);
+            return fract(p.x * p.y);
+          }
+          float dNoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(
+              mix(dHash(i), dHash(i + vec2(1.0, 0.0)), u.x),
+              mix(dHash(i + vec2(0.0, 1.0)), dHash(i + vec2(1.0, 1.0)), u.x),
+              u.y
+            );
+          }`
+        )
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          // Organic gravel-edge breakup so the rural verge dissolves naturally into moss & grass
+          float edgeN = dNoise(vDriveWorldPos.xz * 2.4) * 0.55 + dNoise(vDriveWorldPos.xz * 6.8) * 0.45;
+          float feathered = smoothstep(0.08, 0.72, vVergeAlpha + (edgeN - 0.5) * 0.34);
+          diffuseColor.a *= feathered;
+          if (diffuseColor.a < 0.02) discard;`
+        );
+    };
+
+    const drive = new THREE.Mesh(driveGeo, gravelMat);
     drive.receiveShadow = true;
     group.add(drive);
-  } else if (contract.site === 'misty_creek') {
-    // Glistening coastal creek curving across the back of the valley
-    const creekShape = new THREE.Shape();
-    creekShape.moveTo(-45, -18);
-    creekShape.bezierCurveTo(-15, -11, 10, -21, 45, -12);
-    creekShape.lineTo(45, -5.5);
-    creekShape.bezierCurveTo(10, -14.5, -15, -4.5, -45, -11.5);
-    creekShape.closePath();
 
-    const waterGeo = new THREE.ShapeGeometry(creekShape, 24);
-    waterGeo.rotateX(-Math.PI / 2);
-    const waterMat = new THREE.MeshStandardMaterial({
-      color: '#2c6e78',
-      roughness: 0.16,
-      metalness: 0.48,
-      transparent: true,
-      opacity: 0.84,
+    // Sensible rural driveway boundaries: low river-cobble border stones & weathered cedar edge bollards
+    const curbStoneGeo = new THREE.DodecahedronGeometry(0.32, quality === 'high' ? 1 : 0);
+    ensureAoUv(curbStoneGeo);
+    const curbStoneMat = createStonePbrMat('#8f958d', quality, 1, 1);
+    if (quality !== 'high') curbStoneMat.flatShading = true;
+    const maxCurbStones = quality === 'high' ? 88 : 56;
+    const curbInst = new THREE.InstancedMesh(curbStoneGeo, curbStoneMat, maxCurbStones);
+    curbInst.castShadow = true;
+    curbInst.receiveShadow = true;
+    const curbDummy = new THREE.Object3D();
+    let curbIdx = 0;
+
+    // Border stones curving around the north turnaround arc and lining the driveway shoulders
+    for (let cz = -10.4; cz <= 36 && curbIdx < maxCurbStones; cz += 1.25 + rand() * 0.9) {
+      const cx = homesteadDriveway.centerX(cz);
+      const hw = homesteadDriveway.halfWidth(cz);
+      if (hw < 0.8) continue;
+      const sl = homesteadDriveway.slope(cz);
+      const invL = 1 / Math.hypot(1, sl);
+      const nx = 1 * invL;
+      const nz = -sl * invL;
+      for (const side of [-1, 1]) {
+        if (curbIdx >= maxCurbStones || rand() < 0.32) continue;
+        const off = side * (hw * (1.06 + rand() * 0.16));
+        const sx = cx + nx * off + (rand() - 0.5) * 0.18;
+        const sz = cz + nz * off + (rand() - 0.5) * 0.18;
+        if (contract.hazards.some((h) => Math.hypot(h.x - sx, h.z - sz) < h.radius + 0.65)) continue;
+        if (contract.trees.some((t) => Math.hypot(t.x - sx, t.z - sz) < 1.85)) continue;
+        const sy = getTerrainHeight(sx, sz, contract.site);
+        const rx = 0.55 + rand() * 0.58;
+        const ry = 0.28 + rand() * 0.24;
+        const rz = 0.5 + rand() * 0.52;
+        curbDummy.position.set(sx, sy + ry * 0.22, sz);
+        curbDummy.rotation.set((rand() - 0.5) * 0.28, rand() * Math.PI * 2, (rand() - 0.5) * 0.28);
+        curbDummy.scale.set(rx, ry, rz);
+        curbDummy.updateMatrix();
+        curbInst.setMatrixAt(curbIdx++, curbDummy.matrix);
+      }
+    }
+    curbInst.count = curbIdx;
+    curbInst.instanceMatrix.needsUpdate = true;
+    group.add(curbInst);
+
+    // Low weathered rustic cedar driveway marker posts along key curves & turnaround
+    const postMat = createWoodPbrMat('#755b43', quality, 1, 2, 0.92);
+    const capMat = new THREE.MeshStandardMaterial({ color: '#c9a66b', roughness: 0.65 });
+    const postGeo = new THREE.CylinderGeometry(0.08, 0.095, 0.72, 7);
+    const capGeo = new THREE.CylinderGeometry(0.088, 0.088, 0.07, 7);
+    for (const pzTarget of [-8.8, -4.5, 4.5, 13.5, 22.5, 31.5]) {
+      const cx = homesteadDriveway.centerX(pzTarget);
+      const hw = homesteadDriveway.halfWidth(pzTarget);
+      if (hw < 1.2) continue;
+      const sl = homesteadDriveway.slope(pzTarget);
+      const invL = 1 / Math.hypot(1, sl);
+      const nx = 1 * invL;
+      const nz = -sl * invL;
+      for (const side of [-1, 1]) {
+        const off = side * (hw + 0.48);
+        const px = cx + nx * off;
+        const pz = pzTarget + nz * off;
+        if (contract.hazards.some((h) => Math.hypot(h.x - px, h.z - pz) < h.radius + 0.9)) continue;
+        if (contract.trees.some((t) => Math.hypot(t.x - px, t.z - pz) < 2.2)) continue;
+        const py = getTerrainHeight(px, pz, contract.site);
+        const postGroup = new THREE.Group();
+        const post = new THREE.Mesh(postGeo, postMat);
+        post.position.y = 0.34;
+        post.castShadow = true;
+        post.receiveShadow = true;
+        postGroup.add(post);
+        const band = new THREE.Mesh(capGeo, capMat);
+        band.position.y = 0.62;
+        postGroup.add(band);
+        postGroup.position.set(px, py, pz);
+        postGroup.rotation.set((rand() - 0.5) * 0.05, rand() * Math.PI * 2, (rand() - 0.5) * 0.05);
+        group.add(postGroup);
+      }
+    }
+  } else if (contract.site === 'misty_creek') {
+    // 1) Meandering carved creek bed & wet riparian gravel/mud bank skirt extending past valley fog
+    const xStart = -118;
+    const xEnd = 118;
+    const slices = quality === 'high' ? 168 : 112;
+
+    // Cross-section profile from outer north bank -> deep thalweg -> outer south bank
+    // offsets are multiples of local half-width; yOffset defines smooth bank slope into streambed
+    const bankProfile: Array<{ wMult: number; y: number; col: [number, number, number] }> = [
+      { wMult: -1.55, y: 0.02, col: [0.36, 0.42, 0.29] }, // damp mossy outer bank lip
+      { wMult: -1.22, y: 0.012, col: [0.30, 0.28, 0.22] }, // wet mud & pebble shoulder
+      { wMult: -0.96, y: -0.09, col: [0.24, 0.23, 0.19] }, // darkened wet waterline pebbles
+      { wMult: -0.58, y: -0.28, col: [0.22, 0.25, 0.21] }, // shallow submerged river cobble
+      { wMult: 0.0, y: -0.46, col: [0.15, 0.20, 0.18] }, // deep thalweg channel bed
+      { wMult: 0.58, y: -0.28, col: [0.22, 0.25, 0.21] },
+      { wMult: 0.96, y: -0.09, col: [0.24, 0.23, 0.19] },
+      { wMult: 1.22, y: 0.012, col: [0.30, 0.28, 0.22] },
+      { wMult: 1.55, y: 0.02, col: [0.36, 0.42, 0.29] },
+    ];
+    const bCols = bankProfile.length;
+    const bPositions: number[] = [];
+    const bUvs: number[] = [];
+    const bColors: number[] = [];
+    const bIndices: number[] = [];
+
+    // Water ribbon cross-section (spans slightly inside the wet pebble bank lip so alpha feather blends seamlessly)
+    const wCross = [-1.06, -0.78, -0.42, 0.0, 0.42, 0.78, 1.06];
+    const wCols = wCross.length;
+    const wPositions: number[] = [];
+    const wUvs: number[] = [];
+    const wIndices: number[] = [];
+
+    let arcLen = 0;
+    let prevCx = xStart;
+    let prevCz = getMistyCreekCenterZ(xStart);
+
+    for (let i = 0; i <= slices; i++) {
+      const s = i / slices;
+      const cx = xStart + (xEnd - xStart) * s;
+      const cz = getMistyCreekCenterZ(cx);
+      const hw = getMistyCreekHalfWidth(cx);
+      const slope = getMistyCreekSlope(cx);
+      if (i > 0) {
+        arcLen += Math.hypot(cx - prevCx, cz - prevCz);
+      }
+      prevCx = cx;
+      prevCz = cz;
+
+      // Unit normal pointing toward south (+Z) bank perpendicular to meandering centerline
+      const invLen = 1 / Math.hypot(1, slope);
+      const nx = -slope * invLen;
+      const nz = 1 * invLen;
+
+      for (let j = 0; j < bCols; j++) {
+        const bp = bankProfile[j];
+        const off = bp.wMult * hw;
+        const px = cx + nx * off;
+        const pz = cz + nz * off;
+        // Blend outer lip smoothly onto terrain height so banks never float or clip
+        const isOuterLip = j === 0 || j === bCols - 1;
+        const py = isOuterLip ? Math.max(bp.y, getTerrainHeight(px, pz, contract.site) - 0.03) : bp.y;
+        bPositions.push(px, py, pz);
+        bUvs.push(arcLen * 0.24, j / (bCols - 1));
+        bColors.push(bp.col[0], bp.col[1], bp.col[2]);
+      }
+
+      for (let j = 0; j < wCols; j++) {
+        const off = wCross[j] * hw;
+        const px = cx + nx * off;
+        const pz = cz + nz * off;
+        wPositions.push(px, -0.055, pz);
+        wUvs.push(arcLen, j / (wCols - 1));
+      }
+
+      if (i < slices) {
+        const bRow0 = i * bCols;
+        const bRow1 = (i + 1) * bCols;
+        for (let j = 0; j < bCols - 1; j++) {
+          bIndices.push(bRow0 + j, bRow0 + j + 1, bRow1 + j);
+          bIndices.push(bRow0 + j + 1, bRow1 + j + 1, bRow1 + j);
+        }
+        const wRow0 = i * wCols;
+        const wRow1 = (i + 1) * wCols;
+        for (let j = 0; j < wCols - 1; j++) {
+          wIndices.push(wRow0 + j, wRow0 + j + 1, wRow1 + j);
+          wIndices.push(wRow0 + j + 1, wRow1 + j + 1, wRow1 + j);
+        }
+      }
+    }
+
+    const bankGeo = new THREE.BufferGeometry();
+    bankGeo.setAttribute('position', new THREE.Float32BufferAttribute(bPositions, 3));
+    bankGeo.setAttribute('uv', new THREE.Float32BufferAttribute(bUvs, 2));
+    bankGeo.setAttribute('color', new THREE.Float32BufferAttribute(bColors, 3));
+    bankGeo.setIndex(bIndices);
+    bankGeo.computeVertexNormals();
+    ensureAoUv(bankGeo);
+
+    const bankPbr = pbrAssets.getPbrSet('gravel_road', quality, { repeatX: 1, repeatY: 1 });
+    const bankMat = new THREE.MeshStandardMaterial({
+      map: bankPbr.map,
+      normalMap: bankPbr.normalMap,
+      normalScale: new THREE.Vector2(quality === 'high' ? 1.05 : 0.75, quality === 'high' ? 1.05 : 0.75),
+      roughnessMap: quality === 'high' ? bankPbr.armMap : null,
+      vertexColors: true,
+      roughness: quality === 'high' ? 0.56 : 0.72,
+      metalness: 0.03,
     });
+    const bankMesh = new THREE.Mesh(bankGeo, bankMat);
+    bankMesh.receiveShadow = true;
+    group.add(bankMesh);
+
+    // 2) Flowing meandering water surface following the exact carved stream channel
+    const waterGeo = new THREE.BufferGeometry();
+    waterGeo.setAttribute('position', new THREE.Float32BufferAttribute(wPositions, 3));
+    waterGeo.setAttribute('uv', new THREE.Float32BufferAttribute(wUvs, 2));
+    waterGeo.setIndex(wIndices);
+    waterGeo.computeVertexNormals();
+    const waterMat = makeWaterMat('#2c6e78', 0.88, 0.16);
     waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    waterMesh.position.y = 0.04;
     waterMesh.receiveShadow = true;
     group.add(waterMesh);
 
-    // Rustic timber footbridge across the creek
-    const bridgeGroup = new THREE.Group();
-    const plankMat = new THREE.MeshStandardMaterial({ color: '#6b4c35', roughness: 0.9 });
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.25, 7.2), plankMat);
-    deck.position.y = 0.45;
-    deck.castShadow = true;
-    bridgeGroup.add(deck);
-    for (const bx of [-1.15, 1.15]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 7.2), plankMat);
-      rail.position.set(bx, 1.35, 0);
-      bridgeGroup.add(rail);
+    // 3) Natural riverbank cobbles, mossy edge boulders & mid-stream riffle stones framing the stream
+    const bridgeX = 4.2;
+    const bridgeZ = getMistyCreekCenterZ(bridgeX);
+    const bridgeSlope = getMistyCreekSlope(bridgeX);
+    const bridgeHalfW = getMistyCreekHalfWidth(bridgeX);
+
+    const bankStoneGeo = new THREE.DodecahedronGeometry(0.55, quality === 'high' ? 1 : 0);
+    ensureAoUv(bankStoneGeo);
+    const bankStoneMat = createStonePbrMat('#8b968a', quality, 1, 1);
+    if (quality !== 'high') bankStoneMat.flatShading = true;
+    const maxBankStones = quality === 'high' ? 165 : 105;
+    const bankStoneInst = new THREE.InstancedMesh(bankStoneGeo, bankStoneMat, maxBankStones);
+    bankStoneInst.castShadow = true;
+    bankStoneInst.receiveShadow = true;
+    const stoneDummy = new THREE.Object3D();
+    let stoneIdx = 0;
+
+    // Clustered river cobbles & boulders hugging BOTH north (-1) and south (+1) shorelines
+    for (let sx = -44; sx <= 46 && stoneIdx < maxBankStones - 12; sx += 0.95 + rand() * 0.85) {
+      const cz = getMistyCreekCenterZ(sx);
+      const hw = getMistyCreekHalfWidth(sx);
+      const sl = getMistyCreekSlope(sx);
+      const invL = 1 / Math.hypot(1, sl);
+      const nx = -sl * invL;
+      const nz = 1 * invL;
+
+      for (const side of [-1, 1]) {
+        if (stoneIdx >= maxBankStones - 12) break;
+        // Organic gaps and clusters along the shoreline (denser near outer bends)
+        if (rand() < 0.28) continue;
+        // Leave clear footing right under the footbridge deck
+        if (Math.abs(sx - bridgeX) < 1.9) continue;
+
+        const bankJitter = 0.88 + rand() * 0.36;
+        const bx = sx + nx * (side * hw * bankJitter) + (rand() - 0.5) * 0.35;
+        const bz = cz + nz * (side * hw * bankJitter) + (rand() - 0.5) * 0.35;
+
+        // Never place a bank rock on top of a hazard ring or tree trunk
+        if (contract.hazards.some((h) => Math.hypot(h.x - bx, h.z - bz) < h.radius + 0.7)) continue;
+        if (contract.trees.some((t) => Math.hypot(t.x - bx, t.z - bz) < 2.0)) continue;
+
+        const isLargerBoulder = rand() < 0.26;
+        const radX = isLargerBoulder ? 0.85 + rand() * 0.95 : 0.34 + rand() * 0.52;
+        const radY = isLargerBoulder ? 0.42 + rand() * 0.42 : 0.18 + rand() * 0.26;
+        const radZ = isLargerBoulder ? 0.75 + rand() * 0.85 : 0.32 + rand() * 0.48;
+        const by = bankJitter < 1.0 ? -0.10 : -0.02;
+
+        stoneDummy.position.set(bx, by + radY * 0.28, bz);
+        stoneDummy.rotation.set((rand() - 0.5) * 0.35, rand() * Math.PI * 2, (rand() - 0.5) * 0.35);
+        stoneDummy.scale.set(radX, radY, radZ);
+        stoneDummy.updateMatrix();
+        bankStoneInst.setMatrixAt(stoneIdx++, stoneDummy.matrix);
+      }
     }
-    bridgeGroup.position.set(-4.5, 0, -13.2);
-    bridgeGroup.rotation.y = 0.22;
+
+    // Occasional partially submerged mid-stream mossy riffle stones
+    for (let sx = -32; sx <= 36 && stoneIdx < maxBankStones; sx += 5.5 + rand() * 5.0) {
+      if (Math.abs(sx - bridgeX) < 3.4) continue;
+      const cz = getMistyCreekCenterZ(sx);
+      const hw = getMistyCreekHalfWidth(sx);
+      const sl = getMistyCreekSlope(sx);
+      const invL = 1 / Math.hypot(1, sl);
+      const off = (rand() - 0.5) * hw * 0.95;
+      const rx = sx - sl * invL * off;
+      const rz = cz + invL * off;
+      const radX = 0.75 + rand() * 0.85;
+      const radY = 0.42 + rand() * 0.38;
+      const radZ = 0.65 + rand() * 0.75;
+      stoneDummy.position.set(rx, -0.22 + radY * 0.38, rz);
+      stoneDummy.rotation.set((rand() - 0.5) * 0.3, rand() * Math.PI * 2, (rand() - 0.5) * 0.3);
+      stoneDummy.scale.set(radX, radY, radZ);
+      stoneDummy.updateMatrix();
+      bankStoneInst.setMatrixAt(stoneIdx++, stoneDummy.matrix);
+    }
+    bankStoneInst.count = stoneIdx;
+    bankStoneInst.instanceMatrix.needsUpdate = true;
+    group.add(bankStoneInst);
+
+    // 4) Rustic timber footbridge actually spanning the meandering creek perpendicular to its flow
+    const bridgeGroup = new THREE.Group();
+    const plankMat = createWoodPbrMat('#967152', quality, 2, 4, 0.9);
+    const bridgeSpan = Math.max(6.4, bridgeHalfW * 2 + 2.4);
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.24, bridgeSpan), plankMat);
+    deck.position.y = 0.42;
+    deck.castShadow = true;
+    deck.receiveShadow = true;
+    bridgeGroup.add(deck);
+    // Timber posts & handrails on both sides
+    for (const bx of [-1.15, 1.15]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, bridgeSpan), plankMat);
+      rail.position.set(bx, 1.28, 0);
+      rail.castShadow = true;
+      bridgeGroup.add(rail);
+      for (const pz of [-bridgeSpan * 0.44, 0, bridgeSpan * 0.44]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.15, 0.14), plankMat);
+        post.position.set(bx, 0.75, pz);
+        post.castShadow = true;
+        bridgeGroup.add(post);
+      }
+    }
+    // Stone/timber bank abutments anchoring both ends of the bridge into the creek banks
+    const abutMat = createStonePbrMat('#7c827b', quality, 1, 1);
+    for (const endSign of [-1, 1]) {
+      const abut = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.65, 0.95), abutMat);
+      abut.position.set(0, 0.08, endSign * (bridgeSpan * 0.5 - 0.35));
+      abut.receiveShadow = true;
+      bridgeGroup.add(abut);
+    }
+    bridgeGroup.position.set(bridgeX, 0, bridgeZ);
+    // Align bridge Z-axis perpendicular to local creek tangent (dx=1, dz=bridgeSlope)
+    bridgeGroup.rotation.y = -Math.atan2(bridgeSlope, 1);
     group.add(bridgeGroup);
   } else if (contract.site === 'timber_ridge') {
-    // Harvested stacked timber log deck at edge of landing
-    const barkSet = textureCache.getBarkTextures('douglas_fir');
-    const deckMat = new THREE.MeshStandardMaterial({ map: barkSet.map, roughness: 0.9 });
-    const logGeo = new THREE.CylinderGeometry(0.42, 0.46, 6.2, 10);
+    // Harvested stacked timber log deck at edge of landing with CC0 pine bark PBR
+    const deckPbr = pbrAssets.getPbrSet('pine_bark', quality, { repeatX: 2, repeatY: 3 });
+    const deckMat = new THREE.MeshStandardMaterial({
+      map: deckPbr.map,
+      normalMap: deckPbr.normalMap,
+      normalScale: new THREE.Vector2(1.2, 1.2),
+      roughnessMap: quality === 'high' ? deckPbr.armMap : null,
+      color: new THREE.Color('#e2c8b4'),
+      roughness: 0.92,
+    });
+    const logGeo = new THREE.CylinderGeometry(0.42, 0.46, 6.2, quality === 'high' ? 14 : 10);
     logGeo.rotateZ(Math.PI / 2);
     const deckGroup = new THREE.Group();
     for (let row = 0; row < 3; row++) {
@@ -1170,35 +1923,27 @@ export function buildEnvironment(
     deckGroup.rotation.y = 0.55;
     group.add(deckGroup);
   } else if (contract.site === 'storm_bluff') {
-    // Distant Pacific coastal water sheen far beyond the bluff
-    const oceanMat = new THREE.MeshStandardMaterial({
-      color: '#2c5368',
-      roughness: 0.24,
-      metalness: 0.52,
-    });
-    waterMesh = new THREE.Mesh(new THREE.PlaneGeometry(240, 120), oceanMat);
+    // Pacific coastal water swells beyond the storm bluff
+    const oceanMat = makeWaterMat('#2c5368', 1.0, 0.24);
+    const oceanGeo = new THREE.PlaneGeometry(240, 120, quality === 'high' ? 72 : 1, quality === 'high' ? 40 : 1);
+    waterMesh = new THREE.Mesh(oceanGeo, oceanMat);
     waterMesh.rotation.x = -Math.PI / 2;
     waterMesh.position.set(60, -4.5, 65);
     group.add(waterMesh);
   } else if (contract.site === 'pacific_headland') {
     // 1) Shimmering Pacific Cove stretching out below the headland bluffs
-    const oceanMat = new THREE.MeshStandardMaterial({
-      color: '#225e74',
-      roughness: 0.2,
-      metalness: 0.54,
-    });
-    waterMesh = new THREE.Mesh(new THREE.PlaneGeometry(260, 150), oceanMat);
+    const oceanMat = makeWaterMat('#225e74', 1.0, 0.2);
+    const oceanGeo = new THREE.PlaneGeometry(260, 150, quality === 'high' ? 80 : 1, quality === 'high' ? 48 : 1);
+    waterMesh = new THREE.Mesh(oceanGeo, oceanMat);
     waterMesh.rotation.x = -Math.PI / 2;
     waterMesh.position.set(55, -4.2, 68);
     group.add(waterMesh);
 
     // 2) Sun-bleached coastal granite outcrops lining the headland bluff rim
-    const outcropGeo = new THREE.DodecahedronGeometry(1.8, 1);
-    const outcropMat = new THREE.MeshStandardMaterial({
-      color: '#8e8a7e',
-      roughness: 0.92,
-      flatShading: true,
-    });
+    const outcropGeo = new THREE.DodecahedronGeometry(1.8, quality === 'high' ? 2 : 1);
+    ensureAoUv(outcropGeo);
+    const outcropMat = createStonePbrMat('#b4b0a2', quality, 2, 2);
+    if (quality !== 'high') outcropMat.flatShading = true;
     const outcropSpots: Array<[number, number, number, number]> = [
       [22.5, 13.5, 1.5, 0.9],
       [18.5, 22.0, 2.0, 1.1],
@@ -1220,8 +1965,12 @@ export function buildEnvironment(
     }
 
     // 3) Sandy coastal overlook trail ribbon curving around the seaward meadow edge
+    const trailPbr = pbrAssets.getPbrSet('gravel_road', quality, { repeatX: 5, repeatY: 1 });
     const trailMat = new THREE.MeshStandardMaterial({
-      color: '#a89a78',
+      map: trailPbr.map,
+      normalMap: quality === 'high' ? trailPbr.normalMap : null,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      color: new THREE.Color('#c8ba98'),
       roughness: 0.96,
     });
     const trailPts = [
@@ -1245,7 +1994,7 @@ export function buildEnvironment(
 
     // Weathered driftwood-cedar overlook bench facing the Pacific cove
     const bench = new THREE.Group();
-    const benchWood = new THREE.MeshStandardMaterial({ color: '#7a6855', roughness: 0.9 });
+    const benchWood = createWoodPbrMat('#9d8a74', quality, 2, 1, 0.9);
     const seat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.14, 0.65), benchWood);
     seat.position.y = 0.56;
     seat.castShadow = true;
@@ -1346,8 +2095,12 @@ export function buildEnvironment(
     }
 
     // 2) Dusty ochre gravel mountain cabin track winding across the bunchgrass bench
+    const trackPbr = pbrAssets.getPbrSet('gravel_road', quality, { repeatX: 5, repeatY: 1 });
     const trackMat = new THREE.MeshStandardMaterial({
-      color: '#b09a74',
+      map: trackPbr.map,
+      normalMap: quality === 'high' ? trackPbr.normalMap : null,
+      normalScale: new THREE.Vector2(0.95, 0.95),
+      color: new THREE.Color('#d2bb94'),
       roughness: 0.96,
     });
     const trackPts = [
@@ -1370,12 +2123,10 @@ export function buildEnvironment(
     }
 
     // 3) Pale sun-warmed Rockies limestone outcrops along the rolling foothill benches
-    const outcropGeo = new THREE.DodecahedronGeometry(1.9, 1);
-    const outcropMat = new THREE.MeshStandardMaterial({
-      color: '#a39e90',
-      roughness: 0.93,
-      flatShading: true,
-    });
+    const outcropGeo = new THREE.DodecahedronGeometry(1.9, quality === 'high' ? 2 : 1);
+    ensureAoUv(outcropGeo);
+    const outcropMat = createStonePbrMat('#d2ccc0', quality, 2, 2);
+    if (quality !== 'high') outcropMat.flatShading = true;
     const outcropSpots: Array<[number, number, number, number]> = [
       [-23.5, -16.5, 1.9, 1.0],
       [22.5, -14.5, 2.1, 1.15],
@@ -1419,23 +2170,18 @@ export function buildEnvironment(
     // 2) Backyard Garden Pond (ideal setting for pondside Weeping Willows!)
     const pondShape = new THREE.Shape();
     pondShape.absellipse(0, 0, 4.6, 3.5, 0, Math.PI * 2, false, 0.18);
-    const pondGeo = new THREE.ShapeGeometry(pondShape, 24);
+    const pondGeo = new THREE.ShapeGeometry(pondShape, quality === 'high' ? 36 : 24);
     pondGeo.rotateX(-Math.PI / 2);
-    const pondMat = new THREE.MeshStandardMaterial({
-      color: '#2c767c',
-      roughness: 0.14,
-      metalness: 0.45,
-      transparent: true,
-      opacity: 0.86,
-    });
+    const pondMat = makeWaterMat('#2c767c', 0.86, 0.14);
     waterMesh = new THREE.Mesh(pondGeo, pondMat);
     waterMesh.position.set(-11.5, 0.05, -9.5);
     waterMesh.receiveShadow = true;
     group.add(waterMesh);
 
     // River-cobble border around the backyard pond
-    const cobbleGeo = new THREE.DodecahedronGeometry(0.42, 0);
-    const cobbleMat = new THREE.MeshStandardMaterial({ color: '#838782', roughness: 0.92, flatShading: true });
+    const cobbleGeo = new THREE.DodecahedronGeometry(0.42, quality === 'high' ? 1 : 0);
+    const cobbleMat = createStonePbrMat('#a6aaa4', quality, 1, 1);
+    if (quality !== 'high') cobbleMat.flatShading = true;
     for (let i = 0; i < 26; i++) {
       const a = (i / 26) * Math.PI * 2;
       const cob = new THREE.Mesh(cobbleGeo, cobbleMat);
@@ -1473,7 +2219,7 @@ export function buildEnvironment(
   const sceneOccluders: SceneOccluder[] = [];
 
   for (const h of contract.hazards) {
-    const hGroup = buildHazardMesh(h);
+    const hGroup = buildHazardMesh(h, quality);
     group.add(hGroup);
     hazardGroups.set(h.id, hGroup);
     sceneOccluders.push({
@@ -1498,14 +2244,18 @@ export function buildEnvironment(
   }
 
   // 6. Instanced Ground Undergrowth (Dry Bunchgrass in Kootenay Rockies, Sword Ferns on the coast)
-  const fernCount = contract.site === 'kootenay_rockies' ? 320 : 260;
+  const densityMult = quality === 'high' ? 1.45 : 1.0;
+  const riparianReserve = contract.site === 'misty_creek' ? Math.round(58 * densityMult) : 0;
+  const baseFernCount = Math.round((contract.site === 'kootenay_rockies' ? 320 : 260) * densityMult);
+  const fernCount = baseFernCount + riparianReserve;
   const fernFrondGeo =
     contract.site === 'kootenay_rockies' ? buildBunchgrassGeometry() : buildSwordFernGeometry();
   const fernMat = new THREE.MeshStandardMaterial({
-    color: '#ffffff', // white base so instanceColor isn't double-darkened!
-    roughness: 0.82,
+    color: quality === 'high' ? '#c5d6b8' : '#ffffff',
+    roughness: 0.88,
+    envMapIntensity: quality === 'high' ? 0.34 : 1.0,
     side: THREE.DoubleSide,
-    flatShading: true,
+    flatShading: quality !== 'high',
   });
   const fernInst = new THREE.InstancedMesh(fernFrondGeo, fernMat, fernCount);
   fernInst.receiveShadow = true;
@@ -1513,15 +2263,15 @@ export function buildEnvironment(
   const dummy = new THREE.Object3D();
   const fernColor = new THREE.Color();
   let fIdx = 0;
-  for (let tries = 0; tries < 700 && fIdx < fernCount; tries++) {
+  for (let tries = 0; tries < Math.round(700 * densityMult) && fIdx < baseFernCount; tries++) {
     const angle = rand() * Math.PI * 2;
     const dist = 5.5 + rand() * 34;
     const fx = Math.cos(angle) * dist;
     const fz = Math.sin(angle) * dist;
 
     // Avoid spawning inside trees, driveway center, misty creek water, town street/pond, or hazards
-    const onDriveway = contract.site === 'coastal_homestead' && Math.abs(fx - 1.2) < 3.0 && fz > -2;
-    const inCreek = contract.site === 'misty_creek' && fz > 4.5 && fz < 21.5;
+    const onDriveway = Boolean(homesteadDriveway && homesteadDriveway.isOnDriveway(fx, fz, 0.75));
+    const inCreek = contract.site === 'misty_creek' && isInMistyCreek(fx, fz, 0.95);
     const onTownRoad = contract.site === 'coastal_town' && fz > 11.2 && fz < 22.0;
     const inTownPond = contract.site === 'coastal_town' && Math.hypot((fx + 11.5) / 5.2, (fz + 9.5) / 4.2) < 1.05;
     const inTownCentralLawn = contract.site === 'coastal_town' && Math.hypot(fx, fz) < 11.5;
@@ -1551,10 +2301,48 @@ export function buildEnvironment(
         fernColor.setHSL(0.24 + (rand() - 0.5) * 0.04, 0.18 + rand() * 0.1, 0.3 + rand() * 0.08);
       }
     } else {
-      fernColor.setHSL(0.30 + (rand() - 0.5) * 0.05, 0.48 + rand() * 0.14, 0.20 + rand() * 0.10);
+      fernColor.setHSL(
+        0.31 + (rand() - 0.5) * 0.05,
+        0.46 + rand() * 0.14,
+        (quality === 'high' ? 0.15 : 0.20) + rand() * 0.08
+      );
     }
     fernInst.setColorAt(fIdx, fernColor);
     fIdx++;
+  }
+  if (contract.site === 'misty_creek') {
+    // Lush riparian sword-fern tufts framing both outer mossy banks of the meandering creek
+    for (let sx = -38; sx <= 38 && fIdx < fernCount; sx += 1.45 + rand() * 1.1) {
+      if (Math.abs(sx - 4.2) < 2.2) continue;
+      const cz = getMistyCreekCenterZ(sx);
+      const hw = getMistyCreekHalfWidth(sx);
+      const sl = getMistyCreekSlope(sx);
+      const invL = 1 / Math.hypot(1, sl);
+      const nx = -sl * invL;
+      const nz = 1 * invL;
+      for (const side of [-1, 1]) {
+        if (fIdx >= fernCount || rand() < 0.35) continue;
+        const bankOff = side * (hw + 1.15 + rand() * 1.45);
+        const fx = sx + nx * bankOff;
+        const fz = cz + nz * bankOff;
+        if (contract.trees.some((t) => Math.hypot(t.x - fx, t.z - fz) < 2.0)) continue;
+        if (contract.hazards.some((h) => Math.hypot(h.x - fx, h.z - fz) < h.radius + 0.9)) continue;
+        const fy = getTerrainHeight(fx, fz, contract.site);
+        const s = 0.8 + rand() * 0.78;
+        dummy.position.set(fx, fy + 0.02, fz);
+        dummy.rotation.set((rand() - 0.5) * 0.14, rand() * Math.PI * 2, (rand() - 0.5) * 0.14);
+        dummy.scale.set(s, s * (0.9 + rand() * 0.35), s);
+        dummy.updateMatrix();
+        fernInst.setMatrixAt(fIdx, dummy.matrix);
+        fernColor.setHSL(
+          0.32 + (rand() - 0.5) * 0.04,
+          0.5 + rand() * 0.14,
+          (quality === 'high' ? 0.14 : 0.19) + rand() * 0.07
+        );
+        fernInst.setColorAt(fIdx, fernColor);
+        fIdx++;
+      }
+    }
   }
   fernInst.count = fIdx;
   fernInst.instanceMatrix.needsUpdate = true;
@@ -1562,23 +2350,23 @@ export function buildEnvironment(
   group.add(fernInst);
 
   // 6b. Coastal Wildflowers / Lupine & Clover accents
-  const flowerCount = 85;
+  const flowerCount = Math.round(85 * densityMult);
   const flowerGeo = new THREE.DodecahedronGeometry(0.14, 0);
   flowerGeo.translate(0, 0.22, 0);
-  const flowerMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.75, flatShading: true });
+  const flowerMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.75, flatShading: quality !== 'high' });
   const flowerInst = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
   const flowerPalette =
     contract.site === 'kootenay_rockies'
       ? ['#facc15', '#fde047', '#eab308', '#c4b5fd', '#fef08a'] // arrowleaf balsamroot & mountain lupine
       : ['#e9d5ff', '#fef08a', '#f5f5f4', '#c4b5fd', '#fde68a'];
   let flIdx = 0;
-  for (let tries = 0; tries < 240 && flIdx < flowerCount; tries++) {
+  for (let tries = 0; tries < Math.round(240 * densityMult) && flIdx < flowerCount; tries++) {
     const a = rand() * Math.PI * 2;
     const d = 6 + rand() * 26;
     const x = Math.cos(a) * d;
     const z = Math.sin(a) * d;
-    if (contract.site === 'coastal_homestead' && Math.abs(x - 1.2) < 3.0 && z > -2) continue;
-    if (contract.site === 'misty_creek' && z > 4.5 && z < 21.5) continue;
+    if (homesteadDriveway && homesteadDriveway.isOnDriveway(x, z, 0.75)) continue;
+    if (contract.site === 'misty_creek' && isInMistyCreek(x, z, 1.0)) continue;
     if (contract.site === 'coastal_town' && z > 11.2 && z < 22.0) continue;
     if (contract.site === 'coastal_town' && Math.hypot((x + 11.5) / 5.2, (z + 9.5) / 4.2) < 1.0) continue;
     if (contract.hazards.some((h) => Math.hypot(h.x - x, h.z - z) < h.radius + 1.0)) continue;
@@ -1598,13 +2386,16 @@ export function buildEnvironment(
   group.add(flowerInst);
 
   // 7. Regional Boulders (pale Rockies limestone in Kootenays, mossy granite on the coast)
-  const rockGeo = new THREE.DodecahedronGeometry(1.0, 0);
-  const rockMat = new THREE.MeshStandardMaterial({
-    color: contract.site === 'kootenay_rockies' ? '#9c9789' : '#677067',
-    roughness: 0.95,
-    flatShading: true,
-  });
-  const rockCount = contract.site === 'coastal_town' ? 14 : 42;
+  const rockGeo = new THREE.DodecahedronGeometry(1.0, quality === 'high' ? 1 : 0);
+  ensureAoUv(rockGeo);
+  const rockMat = createStonePbrMat(
+    contract.site === 'kootenay_rockies' ? '#cbc5b6' : '#96a095',
+    quality,
+    1,
+    1
+  );
+  if (quality !== 'high') rockMat.flatShading = true;
+  const rockCount = Math.round((contract.site === 'coastal_town' ? 14 : 42) * (quality === 'high' ? 1.25 : 1.0));
   const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
   rockInst.castShadow = true;
   rockInst.receiveShadow = true;
@@ -1615,6 +2406,8 @@ export function buildEnvironment(
     const rx = Math.cos(a) * d;
     const rz = Math.sin(a) * d;
     if (contract.site === 'coastal_town' && rz > 10.5 && rz < 23.0) continue;
+    if (homesteadDriveway && homesteadDriveway.isOnDriveway(rx, rz, 1.75)) continue;
+    if (contract.site === 'misty_creek' && isInMistyCreek(rx, rz, 1.8)) continue;
     if (contract.hazards.some((h) => Math.hypot(h.x - rx, h.z - rz) < h.radius + 2.2)) continue;
     const ry = getTerrainHeight(rx, rz, contract.site);
     const sx = 0.6 + rand() * 1.4;
@@ -1633,20 +2426,27 @@ export function buildEnvironment(
 
   // 8. Towering Backdrop Cascadia Forest (Instanced Conifer Ring on surrounding ridges!)
   // Includes per-instance misty dissolve fade so background trees obstructing the camera smoothly fade out!
-  const applyBgTreeFadeShader = (mat: THREE.MeshStandardMaterial) => {
-    mat.customProgramCacheKey = () => 'bg-tree-dither-fade';
+  const applyBgTreeFadeShader = (mat: THREE.MeshStandardMaterial, isFoliage = false) => {
+    const useDetail = isFoliage && quality === 'high';
+    mat.customProgramCacheKey = () => (useDetail ? 'bg-tree-dither-fade-fol-high' : 'bg-tree-dither-fade');
     mat.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
         .replace(
           '#include <common>',
           `#include <common>
           attribute float aFade;
-          varying float vBgFade;`
+          varying float vBgFade;
+          ${useDetail ? 'varying vec3 vBgWorldPos;' : ''}`
         )
         .replace(
           '#include <begin_vertex>',
           `#include <begin_vertex>
           vBgFade = aFade;`
+        )
+        .replace(
+          '#include <worldpos_vertex>',
+          `#include <worldpos_vertex>
+          ${useDetail ? 'vBgWorldPos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;' : ''}`
         );
 
       shader.fragmentShader = shader.fragmentShader
@@ -1654,6 +2454,26 @@ export function buildEnvironment(
           '#include <common>',
           `#include <common>
           varying float vBgFade;
+          ${
+            useDetail
+              ? `varying vec3 vBgWorldPos;
+          float bgHash(vec2 p) {
+            p = fract(p * vec2(127.1, 311.7));
+            p += dot(p, p + 19.19);
+            return fract(p.x * p.y);
+          }
+          float bgNoise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(
+              mix(bgHash(i), bgHash(i + vec2(1.0, 0.0)), u.x),
+              mix(bgHash(i + vec2(0.0, 1.0)), bgHash(i + vec2(1.0, 1.0)), u.x),
+              u.y
+            );
+          }`
+              : ''
+          }
           float bgBayer4x4(vec2 p) {
             int x = int(mod(p.x, 4.0));
             int y = int(mod(p.y, 4.0));
@@ -1677,6 +2497,18 @@ export function buildEnvironment(
           }`
         )
         .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          ${
+            useDetail
+              ? `// Evergreen bough-tier shadows & needle dapple so backdrop trees read like real Cascadia conifers
+          float tierBand = sin(vBgWorldPos.y * 2.15 + bgNoise(vBgWorldPos.xz * 0.45) * 3.0) * 0.5 + 0.5;
+          float needles = bgNoise(vBgWorldPos.xz * 1.8 + vec2(0.0, vBgWorldPos.y * 2.4));
+          diffuseColor.rgb *= mix(0.58, 1.12, tierBand * 0.6 + needles * 0.4);`
+              : ''
+          }`
+        )
+        .replace(
           '#include <dithering_fragment>',
           `if (vBgFade < 0.995) {
             if (vBgFade < 0.03) discard;
@@ -1691,10 +2523,15 @@ export function buildEnvironment(
     };
   };
 
-  const bgTreeCount = contract.site === 'kootenay_rockies' ? 115 : 195;
+  const bgTreeCount = Math.round((contract.site === 'kootenay_rockies' ? 115 : 195) * (quality === 'high' ? 1.25 : 1.0));
   const bgTrunkGeo = new THREE.CylinderGeometry(0.18, 0.45, 11, 6);
   bgTrunkGeo.translate(0, 5.5, 0);
-  const bgTrunkMat = new THREE.MeshStandardMaterial({ color: '#453022', roughness: 0.95 });
+  const bgBarkPbr = pbrAssets.getPbrSet('pine_bark', 'standard', { repeatX: 1, repeatY: 4 });
+  const bgTrunkMat = new THREE.MeshStandardMaterial({
+    map: bgBarkPbr.map,
+    color: '#9c7c66',
+    roughness: 0.95,
+  });
   applyBgTreeFadeShader(bgTrunkMat);
 
   const bgCone1Geo = new THREE.ConeGeometry(3.4, 10.5, 7);
@@ -1705,11 +2542,12 @@ export function buildEnvironment(
   bgCone3Geo.translate(0, 18.8, 0);
 
   const bgFolMat = new THREE.MeshStandardMaterial({
-    color: '#ffffff', // white base so instanceColor renders rich sunlit Cascadia greens!
-    roughness: 0.88,
-    flatShading: true,
+    color: quality === 'high' ? '#c2d1be' : '#ffffff',
+    roughness: 0.92,
+    envMapIntensity: quality === 'high' ? 0.3 : 1.0,
+    flatShading: quality !== 'high',
   });
-  applyBgTreeFadeShader(bgFolMat);
+  applyBgTreeFadeShader(bgFolMat, true);
 
   const bgFadeArray = new Float32Array(bgTreeCount).fill(1);
   const bgFadeAttr = new THREE.InstancedBufferAttribute(bgFadeArray, 1);
@@ -1745,8 +2583,10 @@ export function buildEnvironment(
       rand() * 68;
     const tx = Math.cos(angle) * dist;
     const tz = Math.sin(angle) * dist;
-    // Keep the town street corridor clear of backdrop forest trunks
+    // Keep the town street, homestead driveway, and meandering creek bed clear of backdrop forest trunks
     if (contract.site === 'coastal_town' && tz > 10.0 && tz < 24.0) continue;
+    if (homesteadDriveway && homesteadDriveway.isOnDriveway(tx, tz, 2.8)) continue;
+    if (contract.site === 'misty_creek' && isInMistyCreek(tx, tz, 3.0)) continue;
     const ty = getTerrainHeight(tx, tz, contract.site);
     const scale = 0.72 + rand() * 0.95;
     const sx = scale * (0.85 + rand() * 0.3);
@@ -1868,6 +2708,12 @@ export function buildEnvironment(
     }
   };
 
+  const updateEffects = (elapsed: number, windSpeed: number, windAngle: number): void => {
+    for (const fn of effectUpdaters) {
+      fn(elapsed, windSpeed, windAngle);
+    }
+  };
+
   scene.add(group);
 
   return {
@@ -1878,8 +2724,10 @@ export function buildEnvironment(
     waterMesh,
     sunLight,
     hemiLight,
+    sunDir,
     skyMesh,
     windAnimatedMeshes,
+    updateEffects,
     updateBackgroundOcclusion,
   };
 }

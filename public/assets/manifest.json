@@ -1,0 +1,124 @@
+{
+  "textures": {
+    "pine_bark": {
+      "diff": "assets/textures/pine_bark/diff.webp",
+      "diff1k": "assets/textures/pine_bark/diff_1k.webp",
+      "nor": "assets/textures/pine_bark/nor.webp",
+      "arm": "assets/textures/pine_bark/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "japanese_cedar_bark": {
+      "diff": "assets/textures/japanese_cedar_bark/diff.webp",
+      "diff1k": "assets/textures/japanese_cedar_bark/diff_1k.webp",
+      "nor": "assets/textures/japanese_cedar_bark/nor.webp",
+      "arm": "assets/textures/japanese_cedar_bark/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "tree_bark_03": {
+      "diff": "assets/textures/tree_bark_03/diff.webp",
+      "diff1k": "assets/textures/tree_bark_03/diff_1k.webp",
+      "nor": "assets/textures/tree_bark_03/nor.webp",
+      "arm": "assets/textures/tree_bark_03/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "bark_willow": {
+      "diff": "assets/textures/bark_willow/diff.webp",
+      "diff1k": "assets/textures/bark_willow/diff_1k.webp",
+      "nor": "assets/textures/bark_willow/nor.webp",
+      "arm": "assets/textures/bark_willow/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "bark_brown_01": {
+      "diff": "assets/textures/bark_brown_01/diff.webp",
+      "diff1k": "assets/textures/bark_brown_01/diff_1k.webp",
+      "nor": "assets/textures/bark_brown_01/nor.webp",
+      "arm": "assets/textures/bark_brown_01/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "leaves_forest_ground": {
+      "diff": "assets/textures/leaves_forest_ground/diff.webp",
+      "diff1k": "assets/textures/leaves_forest_ground/diff_1k.webp",
+      "nor": "assets/textures/leaves_forest_ground/nor.webp",
+      "arm": "assets/textures/leaves_forest_ground/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "grass_path_3": {
+      "diff": "assets/textures/grass_path_3/diff.webp",
+      "diff1k": "assets/textures/grass_path_3/diff_1k.webp",
+      "nor": "assets/textures/grass_path_3/nor.webp",
+      "arm": "assets/textures/grass_path_3/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "brown_mud_leaves_01": {
+      "diff": "assets/textures/brown_mud_leaves_01/diff.webp",
+      "diff1k": "assets/textures/brown_mud_leaves_01/diff_1k.webp",
+      "nor": "assets/textures/brown_mud_leaves_01/nor.webp",
+      "arm": "assets/textures/brown_mud_leaves_01/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "mossy_rock": {
+      "diff": "assets/textures/mossy_rock/diff.webp",
+      "diff1k": "assets/textures/mossy_rock/diff_1k.webp",
+      "nor": "assets/textures/mossy_rock/nor.webp",
+      "arm": "assets/textures/mossy_rock/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "wood_planks": {
+      "diff": "assets/textures/wood_planks/diff.webp",
+      "diff1k": "assets/textures/wood_planks/diff_1k.webp",
+      "nor": "assets/textures/wood_planks/nor.webp",
+      "arm": "assets/textures/wood_planks/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "gravel_road": {
+      "diff": "assets/textures/gravel_road/diff.webp",
+      "diff1k": "assets/textures/gravel_road/diff_1k.webp",
+      "nor": "assets/textures/gravel_road/nor.webp",
+      "arm": "assets/textures/gravel_road/arm.webp",
+      "source": "Poly Haven (CC0)"
+    },
+    "sitka_spruce_bark": {
+      "diff": "assets/textures/sitka_spruce_bark/diff.webp",
+      "diff1k": "assets/textures/sitka_spruce_bark/diff_1k.webp",
+      "nor": "assets/textures/sitka_spruce_bark/nor.webp",
+      "arm": "assets/textures/sitka_spruce_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
+    "arbutus_bark": {
+      "diff": "assets/textures/arbutus_bark/diff.webp",
+      "diff1k": "assets/textures/arbutus_bark/diff_1k.webp",
+      "nor": "assets/textures/arbutus_bark/nor.webp",
+      "arm": "assets/textures/arbutus_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
+    "ponderosa_pine_bark": {
+      "diff": "assets/textures/ponderosa_pine_bark/diff.webp",
+      "diff1k": "assets/textures/ponderosa_pine_bark/diff_1k.webp",
+      "nor": "assets/textures/ponderosa_pine_bark/nor.webp",
+      "arm": "assets/textures/ponderosa_pine_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
+    "aspen_bark": {
+      "diff": "assets/textures/aspen_bark/diff.webp",
+      "diff1k": "assets/textures/aspen_bark/diff_1k.webp",
+      "nor": "assets/textures/aspen_bark/nor.webp",
+      "arm": "assets/textures/aspen_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
+    "sawn_end_grain": {
+      "diff": "assets/textures/sawn_end_grain/diff.webp",
+      "diff1k": "assets/textures/sawn_end_grain/diff_1k.webp",
+      "nor": "assets/textures/sawn_end_grain/nor.webp",
+      "arm": "assets/textures/sawn_end_grain/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    }
+  },
+  "hdris": {
+    "sunny_morning": "assets/hdri/sunny_morning.hdr",
+    "misty_fog": "assets/hdri/misty_fog.hdr",
+    "light_rain": "assets/hdri/light_rain.hdr",
+    "golden_hour": "assets/hdri/golden_hour.hdr",
+    "coastal_gale": "assets/hdri/coastal_gale.hdr"
+  },
+  "license": "CC0 via Poly Haven"
+}

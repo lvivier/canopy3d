@@ -37,6 +37,8 @@ export type ToolId = 'prune' | 'fell' | 'wedge' | 'buck';
 
 export type WeatherId = 'sunny_morning' | 'misty_fog' | 'light_rain' | 'golden_hour' | 'coastal_gale';
 
+export type GraphicsQuality = 'standard' | 'high';
+
 export interface SpeciesSpec {
   id: SpeciesId;
   name: string;
@@ -372,6 +374,7 @@ export interface GameHUDState {
   windSpeed: number;
   windAngle: number;
   muted: boolean;
+  graphicsQuality: GraphicsQuality;
   cameraAngleDeg: number;
   /** Contract progress */
   completedContracts: Record<string, { stars: number; score: number; earnings: number }>;
