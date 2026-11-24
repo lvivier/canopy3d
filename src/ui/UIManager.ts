@@ -17,7 +17,7 @@ const TOOL_META: Record<ToolId, { name: string; key: string; icon: string; desc:
     desc: 'Aim, Face Notch & Back Cut',
   },
   wedge: {
-    name: 'Felling Wedge',
+    name: 'Wedge',
     key: '3',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="4,17 20,17 20,9"/><path d="M12 5v4m-2-2h4"/></svg>`,
     desc: 'Lift back-leaning trunks',
@@ -35,6 +35,8 @@ const SITE_NAMES: Record<SiteId, string> = {
   misty_creek: 'Misty Valley Creek',
   timber_ridge: 'Old-Growth Timber Ridge',
   storm_bluff: 'Storm-Damaged Bluff',
+  coastal_town: 'Coastal Town Yards',
+  pacific_headland: 'Pacific Headland',
 };
 
 const WEATHER_NAMES: Record<WeatherId, string> = {
@@ -127,7 +129,7 @@ export class UIManager {
         <div class="eyebrow">PACIFIC NORTHWEST ARBORIST &amp; LOGGING SIM</div>
         <h1 class="game-title">Canopy <span>3D</span></h1>
         <p class="game-subtitle">
-          Prune storm-damaged limbs, balance coastal giants, carve textbook directional notches, and fell Cascadia timber with mouse-driven precision.
+          Work as a Pacific Northwest arborist—prune damaged limbs, tame heavy crowns, and remove trees with careful felling cuts.
         </p>
 
         <div class="title-actions">
@@ -138,7 +140,7 @@ export class UIManager {
             Contracts (${completedCount}/${CAMPAIGN_CONTRACTS.length})
           </button>
           <button class="btn btn-secondary" id="btn-open-sandbox">
-            Free-Cut Sandbox
+            Free Cut
           </button>
         </div>
 
@@ -153,9 +155,9 @@ export class UIManager {
         </div>
 
         <div class="controls-legend">
-          <span><b>Left-Click / Hold</b> Aim, Prune, Saw &amp; Wedge</span>
-          <span><b>Right-Click Drag / Arrows</b> Orbit Camera</span>
-          <span><b>Scroll / - =</b> Zoom</span>
+          <span><b>Left-Click</b> Aim, Prune, Saw &amp; Wedge</span>
+          <span><b>Right-Click Drag</b> Orbit Camera</span>
+          <span><b>Scroll / Pinch</b> Zoom</span>
         </div>
       </div>
     `;
@@ -434,6 +436,14 @@ export class UIManager {
     hud.querySelector('#btn-orbit-left')?.addEventListener('click', () => this.engine.orbitCameraStep(-1));
     hud.querySelector('#btn-orbit-right')?.addEventListener('click', () => this.engine.orbitCameraStep(1));
 
+    hud.querySelector('#hud-objectives')?.addEventListener('click', (e) => {
+      const li = (e.target as HTMLElement | null)?.closest('li[data-tree-id]') as HTMLElement | null;
+      const treeId = li?.dataset.treeId;
+      if (treeId) {
+        this.engine.selectTree(treeId);
+      }
+    });
+
     hud.querySelectorAll('.tool-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         const t = (btn as HTMLElement).dataset.tool as ToolId;
@@ -451,18 +461,21 @@ export class UIManager {
     (hud.querySelector('#hud-title') as HTMLElement).textContent = state.contract.title;
     (hud.querySelector('#hud-sub') as HTMLElement).textContent = state.contract.subtitle;
 
-    // Objectives
+    // Objectives (click any item to focus camera on that tree; only touch DOM when changed so clicks never drop!)
     const objEl = hud.querySelector('#hud-objectives') as HTMLElement;
-    objEl.innerHTML = state.objectives
+    const nextObjHtml = state.objectives
       .map(
         (o) => `
-      <li class="${o.done ? 'done' : ''}">
+      <li class="${o.done ? 'done' : ''} ${o.treeId && o.treeId === state.activeTreeId ? 'active-tree' : ''}" data-tree-id="${o.treeId ?? ''}" title="Click to focus camera on this tree">
         <span class="obj-check">${o.done ? '✓' : '○'}</span>
         <span class="obj-text">${o.text}</span>
         ${o.progress ? `<span class="obj-prog">${o.progress}</span>` : ''}
       </li>`
       )
       .join('');
+    if (objEl.innerHTML !== nextObjHtml) {
+      objEl.innerHTML = nextObjHtml;
+    }
 
     // Wind & Mute
     const mph = Math.round(state.windSpeed * 45);

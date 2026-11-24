@@ -12,7 +12,7 @@ import { CAMPAIGN_CONTRACTS } from '../data/contracts';
 import { AudioEngine } from '../audio/AudioEngine';
 import { buildEnvironment, BuiltEnvironment } from '../graphics/EnvironmentBuilder';
 import { buildTreeRuntime, recomputeTreeLean, syncTrunkCutVisuals } from '../graphics/TreeGenerator';
-import { CameraController } from './CameraController';
+import { CameraController, CameraKeyframe } from './CameraController';
 import { ParticleSystem } from './ParticleSystem';
 
 type HUDListener = (state: GameHUDState) => void;
@@ -264,11 +264,13 @@ export class GameEngine {
     this.cuttingTopCut = null;
     this.cuttingTrunkStage = 'none';
     this.audio.setSawActive('none');
+    this.cameraCtrl.cancelIntro(false);
   }
 
   public openScreen(screen: GameHUDState['screen']): void {
     this.audio.init();
     this.audio.playClick();
+    this.cameraCtrl.cancelIntro(false);
     this.screen = screen;
     if (screen === 'title') {
       this.cameraCtrl.setAutoRotate(0.08);
@@ -311,7 +313,7 @@ export class GameEngine {
       } else {
         this.activeTool = 'fell';
       }
-      this.focusCameraForCurrentState(true);
+      this.playContractIntro();
     }
 
     this.showToast(`Contract Started: ${contract.title}`, 'info');
@@ -348,10 +350,10 @@ export class GameEngine {
     this.emitHUD();
   }
 
-  public selectTree(treeId: string): void {
+  public selectTree(treeId: string, silent = false): void {
     const found = this.trees.find((t) => t.spec.id === treeId);
     if (!found) return;
-    this.audio.playClick();
+    if (!silent) this.audio.playClick();
     this.activeTreeId = treeId;
 
     // Auto-select smart tool for newly clicked tree
@@ -367,6 +369,14 @@ export class GameEngine {
 
     this.focusCameraForCurrentState(false);
     this.emitHUD();
+  }
+
+  private focusNextIncompleteTree(excludeId?: string): void {
+    if (this.contractFinished) return;
+    const next = this.trees.find((t) => !t.completed && t.spec.id !== excludeId);
+    if (next) {
+      this.selectTree(next.spec.id, true);
+    }
   }
 
   public resetAim(): void {
@@ -417,7 +427,7 @@ export class GameEngine {
       let targetFade = 1;
       const isDowned =
         tree.stage === 'fallen' || tree.stage === 'bucked' || tree.stage === 'falling';
-      const minFade = isDowned ? 0.08 : 0.2;
+      const minFade = isDowned ? 0.08 : 0.14;
 
       if (playing && activeId && tree.spec.id !== activeId) {
         this._occBox.setFromObject(tree.rootGroup);
@@ -426,14 +436,14 @@ export class GameEngine {
           this._occBox.getSize(this._occSize);
           const rMax = Math.max(this._occSize.x, this._occSize.z) * 0.55;
           const yMin = this._occBox.min.y - 1.5;
-          const yMax = this._occBox.max.y + (isDowned ? 6.0 : 1.5);
+          const yMax = this._occBox.max.y + (isDowned ? 6.0 : 2.0);
 
           // Near-camera dissolve (lens inside / beside another tree's crown or downed canopy)
           const camHoriz = Math.hypot(this._occCenter.x - cameraPos.x, this._occCenter.z - cameraPos.z);
-          const nearPad = isDowned ? rMax + 7.5 : rMax + 4.5;
-          if (camHoriz < nearPad && cameraPos.y >= yMin && cameraPos.y <= yMax + (isDowned ? 8 : 0)) {
+          const nearPad = isDowned ? rMax + 7.5 : rMax + 5.8;
+          if (camHoriz < nearPad && cameraPos.y >= yMin && cameraPos.y <= yMax + (isDowned ? 8 : 2)) {
             const nearFactor = THREE.MathUtils.clamp(
-              (camHoriz - (rMax * (isDowned ? 0.35 : 0.55) + 1.0)) / (isDowned ? 5.5 : 3.8),
+              (camHoriz - (rMax * (isDowned ? 0.35 : 0.65) + 1.2)) / (isDowned ? 5.5 : 4.2),
               minFade,
               1
             );
@@ -454,8 +464,8 @@ export class GameEngine {
             const uRaw =
               ((this._occCenter.x - cameraPos.x) * dx + (this._occCenter.z - cameraPos.z) * dz) *
               invHorizLenSq;
-            const uLo = isDowned ? -0.2 : -0.08;
-            const uHi = isDowned ? 1.05 : 0.94;
+            const uLo = isDowned ? -0.2 : -0.15;
+            const uHi = isDowned ? 1.05 : 0.95;
             if (uRaw > uLo && uRaw < uHi) {
               const u = THREE.MathUtils.clamp(uRaw, 0, 1);
               const px = cameraPos.x + dx * u;
@@ -466,8 +476,8 @@ export class GameEngine {
               const heightOk = isDowned || (py >= yMin && py <= yMax);
               if (heightOk) {
                 const perpDist = Math.hypot(this._occCenter.x - px, this._occCenter.z - pz);
-                const clearRadius = rMax * (isDowned ? 0.85 : 0.72) + (isDowned ? 2.4 : 1.4) + (1 - u) * 2.8;
-                const softBand = isDowned ? 5.5 : 3.6;
+                const clearRadius = rMax * (isDowned ? 0.85 : 0.85) + (isDowned ? 2.4 : 1.8) + (1 - u) * 3.0;
+                const softBand = isDowned ? 5.5 : 3.8;
                 if (perpDist < clearRadius + softBand) {
                   const sightFactor = THREE.MathUtils.clamp(
                     (perpDist - clearRadius) / softBand,
@@ -490,13 +500,21 @@ export class GameEngine {
 
       for (const entry of tree.occlusionMaterials) {
         if (snapped >= 0.995) {
+          const nextTransparent = entry.baseOpacity < 0.999;
           entry.mat.opacity = entry.baseOpacity;
-          entry.mat.transparent = entry.baseOpacity < 0.999;
           entry.mat.depthWrite = true;
+          if (entry.mat.transparent !== nextTransparent) {
+            entry.mat.transparent = nextTransparent;
+            // Required in Three.js so #define OPAQUE is recompiled on transparent state transitions
+            entry.mat.needsUpdate = true;
+          }
         } else {
-          entry.mat.transparent = true;
           entry.mat.opacity = entry.baseOpacity * snapped;
           entry.mat.depthWrite = snapped > 0.72;
+          if (!entry.mat.transparent) {
+            entry.mat.transparent = true;
+            entry.mat.needsUpdate = true;
+          }
         }
       }
     }
@@ -546,84 +564,346 @@ export class GameEngine {
     return best;
   }
 
-  private focusCameraForCurrentState(immediate: boolean): void {
-    const tree = this.getActiveTree();
-    if (!tree) return;
+  private scoreAzimuthObstruction(
+    tree: TreeRuntime,
+    az: number,
+    distance: number,
+    polar: number,
+    focusX: number = tree.spec.x,
+    focusZ: number = tree.spec.z
+  ): number {
+    const camHoriz = distance * Math.sin(polar);
+    const dirX = Math.cos(az);
+    const dirZ = Math.sin(az);
+    const camX = focusX + dirX * camHoriz;
+    const camZ = focusZ + dirZ * camHoriz;
+    let penalty = 0;
 
+    // 1. Penalize tall buildings / structures between camera and target
+    const hazards = this.currentContract?.hazards ?? [];
+    for (const hz of hazards) {
+      if (
+        hz.type !== 'cabin' &&
+        hz.type !== 'house' &&
+        hz.type !== 'barn' &&
+        hz.type !== 'shed' &&
+        hz.type !== 'greenhouse' &&
+        hz.type !== 'gazebo'
+      ) {
+        continue;
+      }
+      const rx = hz.x - focusX;
+      const rz = hz.z - focusZ;
+      const proj = rx * dirX + rz * dirZ;
+      const perp = Math.abs(rx * -dirZ + rz * dirX);
+      const clearMargin = hz.radius + 2.4;
+      const tallWeight =
+        hz.type === 'cabin' || hz.type === 'house' || hz.type === 'barn' ? 14 : 6;
+
+      if (proj > 1.0 && proj < camHoriz + hz.radius && perp < clearMargin) {
+        penalty += tallWeight * (1 - perp / clearMargin);
+      }
+      const camDist = Math.hypot(hz.x - camX, hz.z - camZ);
+      if (camDist < hz.radius + 3.5) {
+        penalty += tallWeight * 0.75 * (1 - camDist / (hz.radius + 3.5));
+      }
+    }
+
+    // 2. Penalize other standing playable trees between camera and target (or crowding the lens!)
+    for (const other of this.trees) {
+      if (other.spec.id === tree.spec.id) continue;
+      if (other.stage === 'fallen' || other.stage === 'bucked') continue;
+
+      const crownR = Math.max(3.6, other.currentHeight * 0.28);
+      const rx = other.spec.x - focusX;
+      const rz = other.spec.z - focusZ;
+      const proj = rx * dirX + rz * dirZ;
+      const perp = Math.abs(rx * -dirZ + rz * dirX);
+      const clearMargin = crownR + 2.8;
+
+      if (proj > 0.8 && proj < camHoriz + crownR + 2.0 && perp < clearMargin) {
+        penalty += 18 * (1 - perp / clearMargin);
+      }
+      const camDist = Math.hypot(other.spec.x - camX, other.spec.z - camZ);
+      if (camDist < crownR + 4.5) {
+        penalty += 14 * (1 - camDist / (crownR + 4.5));
+      }
+    }
+
+    return penalty;
+  }
+
+  private pickClearPruneAzimuth(
+    tree: TreeRuntime,
+    tagAngle: number,
+    distance: number,
+    polar: number
+  ): number {
+    // ~45° oblique 3/4 view keeps branch-tip foliage off to the side so yellow collar ribbons
+    // & tags are completely unobstructed and viewed broadside!
+    const offsets = [0.78, -0.78, 0.58, -0.58, 1.02, -1.02];
+    let bestAz = tagAngle + 0.78;
+    let bestScore = Infinity;
+
+    for (let i = 0; i < offsets.length; i++) {
+      const off = offsets[i];
+      const az = tagAngle + off;
+      // Slight preference for the ~0.78 rad (45°) 3/4 angle when clear of trees & buildings
+      const penalty =
+        Math.abs(Math.abs(off) - 0.78) * 1.2 +
+        (i % 2) * 0.02 +
+        this.scoreAzimuthObstruction(tree, az, distance, polar);
+
+      if (penalty < bestScore) {
+        bestScore = penalty;
+        bestAz = az;
+      }
+    }
+
+    return bestAz;
+  }
+
+  private computeFocusPoseForTree(
+    tree: TreeRuntime,
+    tool: ToolId
+  ): { target: THREE.Vector3; distance: number; polar: number; azimuth?: number } | null {
     const tx = tree.spec.x;
     const tz = tree.spec.z;
     const h = tree.currentHeight;
 
-    if (this.activeTool === 'prune') {
-      this.cameraCtrl.focusOn(
-        new THREE.Vector3(tx, h * 0.44, tz),
-        Math.max(19.5, h * 1.24),
-        1.17
+    if (tool === 'prune') {
+      const targetBranches = tree.branches.filter((b) => b.isTarget && !b.pruned);
+      let sumX = 0;
+      let sumZ = 0;
+      let sumY = 0;
+      for (const b of targetBranches) {
+        sumX += b.worldDirection.x;
+        sumZ += b.worldDirection.z;
+        sumY += b.attachLocalPos.y;
+      }
+
+      const distance = Math.max(13.0, Math.min(38, h * 1.24));
+      const polar = 1.28;
+      const avgTagY = targetBranches.length > 0 ? sumY / targetBranches.length : h * 0.44;
+      const focusY = THREE.MathUtils.clamp(
+        avgTagY * 0.6 + h * 0.44 * 0.4,
+        Math.max(1.8, h * 0.25),
+        h * 0.62
       );
-    } else if (this.activeTool === 'fell') {
+
+      let azimuth: number | undefined;
+      if (Math.hypot(sumX, sumZ) > 0.15) {
+        azimuth = this.pickClearPruneAzimuth(tree, Math.atan2(sumZ, sumX), distance, polar);
+      } else if (tree.spec.hazardBranchAngle !== undefined) {
+        azimuth = this.pickClearPruneAzimuth(tree, tree.spec.hazardBranchAngle, distance, polar);
+      }
+
+      return {
+        target: new THREE.Vector3(tx, focusY, tz),
+        distance,
+        polar,
+        azimuth,
+      };
+    } else if (tool === 'fell') {
       if (tree.stage === 'standing') {
         // High bird's-eye slanted view so player clearly sees tree + drop zone + hazards!
         const aimAngle = tree.spec.dropZone ? tree.spec.dropZone.angle : tree.aimAngle;
-        this.cameraCtrl.focusOn(
-          new THREE.Vector3(tx + Math.cos(aimAngle) * h * 0.22, h * 0.30, tz + Math.sin(aimAngle) * h * 0.22),
-          Math.max(24, h * 1.45),
-          0.96,
-          aimAngle + Math.PI * 0.72
-        );
+        const fx = tx + Math.cos(aimAngle) * h * 0.22;
+        const fz = tz + Math.sin(aimAngle) * h * 0.22;
+        const dist = Math.max(24, h * 1.45);
+        const polar = 0.96;
+        const azA = aimAngle + Math.PI * 0.72;
+        const azB = aimAngle - Math.PI * 0.72;
+        const bestAz =
+          this.scoreAzimuthObstruction(tree, azB, dist, polar, fx, fz) + 0.5 <
+          this.scoreAzimuthObstruction(tree, azA, dist, polar, fx, fz)
+            ? azB
+            : azA;
+        return {
+          target: new THREE.Vector3(fx, h * 0.3, fz),
+          distance: dist,
+          polar,
+          azimuth: bestAz,
+        };
       } else if (tree.stage === 'aimed') {
         // Focus nicely on the face-notch side of the trunk
-        this.cameraCtrl.focusOn(
-          new THREE.Vector3(tx, tree.cutHeight + 0.55, tz),
-          Math.max(8.5, tree.baseRadius * 16),
-          1.25,
-          tree.aimAngle + 0.55
-        );
+        return {
+          target: new THREE.Vector3(tx, tree.cutHeight + 0.55, tz),
+          distance: Math.max(8.5, tree.baseRadius * 16),
+          polar: 1.25,
+          azimuth: tree.aimAngle + 0.55,
+        };
       } else if (tree.stage === 'notched' || tree.stage === 'hinge_ready') {
         // Pivot cleanly to see the back-cut side AND down the drop direction
-        this.cameraCtrl.focusOn(
-          new THREE.Vector3(tx, tree.cutHeight + 0.6, tz),
-          Math.max(9.2, tree.baseRadius * 17),
-          1.22,
-          tree.aimAngle + Math.PI - 0.58
-        );
+        return {
+          target: new THREE.Vector3(tx, tree.cutHeight + 0.6, tz),
+          distance: Math.max(9.2, tree.baseRadius * 17),
+          polar: 1.22,
+          azimuth: tree.aimAngle + Math.PI - 0.58,
+        };
       }
-    } else if (this.activeTool === 'wedge') {
-      this.cameraCtrl.focusOn(
-        new THREE.Vector3(tx, tree.cutHeight + 0.5, tz),
-        Math.max(8.5, tree.baseRadius * 15),
-        1.24,
-        tree.aimAngle + Math.PI - 0.45
-      );
-    } else if (this.activeTool === 'buck') {
+    } else if (tool === 'wedge') {
+      return {
+        target: new THREE.Vector3(tx, tree.cutHeight + 0.5, tz),
+        distance: Math.max(8.5, tree.baseRadius * 15),
+        polar: 1.24,
+        azimuth: tree.aimAngle + Math.PI - 0.45,
+      };
+    } else if (tool === 'buck') {
       const topCut = this.getNextStandingTopCut(tree);
       if (topCut) {
         // Frame the active standing top-down ring AND the Prime Landing / shed shadow below!
         const aimAngle = tree.spec.dropZone ? tree.spec.dropZone.angle : tree.aimAngle;
-        this.cameraCtrl.focusOn(
-          new THREE.Vector3(
+        return {
+          target: new THREE.Vector3(
             tx + Math.cos(aimAngle) * h * 0.14,
             Math.max(h * 0.42, tree.cutHeight + topCut.localY * 0.72),
             tz + Math.sin(aimAngle) * h * 0.14
           ),
-          Math.max(25, h * 1.32),
-          1.02,
-          aimAngle + Math.PI * 0.72
-        );
+          distance: Math.max(25, h * 1.32),
+          polar: 1.02,
+          azimuth: aimAngle + Math.PI * 0.72,
+        };
       } else {
         const midDist = h * 0.36;
-        this.cameraCtrl.focusOn(
-          new THREE.Vector3(
+        return {
+          target: new THREE.Vector3(
             tx + Math.cos(tree.actualFallDirection) * midDist,
             1.2,
             tz + Math.sin(tree.actualFallDirection) * midDist
           ),
-          Math.max(15, h * 0.85),
-          0.95
-        );
+          distance: Math.max(15, h * 0.85),
+          polar: 0.95,
+        };
       }
     }
 
+    return null;
+  }
+
+  private focusCameraForCurrentState(immediate: boolean): void {
+    const tree = this.getActiveTree();
+    if (!tree) return;
+
+    const pose = this.computeFocusPoseForTree(tree, this.activeTool);
+    if (pose) {
+      this.cameraCtrl.focusOn(pose.target, pose.distance, pose.polar, pose.azimuth);
+    }
+
     if (immediate) this.cameraCtrl.applyImmediate();
+  }
+
+  private playContractIntro(): void {
+    const firstTree = this.trees[0];
+    if (!firstTree) return;
+
+    const rawEnd = this.computeFocusPoseForTree(firstTree, this.activeTool);
+    const endAzimuth =
+      rawEnd?.azimuth ??
+      firstTree.spec.hazardBranchAngle ??
+      (firstTree.spec.dropZone ? firstTree.spec.dropZone.angle + Math.PI * 0.72 : 0.72);
+    const endPose: CameraKeyframe = {
+      target: rawEnd?.target ?? new THREE.Vector3(firstTree.spec.x, firstTree.currentHeight * 0.44, firstTree.spec.z),
+      distance: rawEnd?.distance ?? Math.max(19.5, firstTree.currentHeight * 1.24),
+      polar: rawEnd?.polar ?? 1.16,
+      azimuth: endAzimuth,
+    };
+
+    // Compute work-site overview center across all contract trees & nearby landmarks
+    const treeCentroid = new THREE.Vector3();
+    let maxH = 0;
+    for (const t of this.trees) {
+      treeCentroid.x += t.spec.x;
+      treeCentroid.y += t.currentHeight * 0.38;
+      treeCentroid.z += t.spec.z;
+      maxH = Math.max(maxH, t.currentHeight);
+    }
+    treeCentroid.divideScalar(this.trees.length);
+
+    const siteCenter = treeCentroid.clone();
+    const hazards = this.currentContract?.hazards ?? [];
+    if (hazards.length > 0) {
+      let hx = 0;
+      let hz = 0;
+      for (const hzItem of hazards) {
+        hx += hzItem.x;
+        hz += hzItem.z;
+      }
+      siteCenter.x = THREE.MathUtils.lerp(treeCentroid.x, hx / hazards.length, 0.22);
+      siteCenter.z = THREE.MathUtils.lerp(treeCentroid.z, hz / hazards.length, 0.22);
+    }
+
+    let maxSpread = 0;
+    for (const t of this.trees) {
+      const d = Math.hypot(t.spec.x - siteCenter.x, t.spec.z - siteCenter.z);
+      maxSpread = Math.max(maxSpread, d);
+    }
+
+    const keyframes: CameraKeyframe[] = [];
+    let duration = 2.7;
+
+    if (this.trees.length === 1) {
+      const startDist = THREE.MathUtils.clamp(
+        Math.max(endPose.distance * 1.65, maxH * 1.85 + 7),
+        24,
+        54
+      );
+      const startTarget = endPose.target.clone().lerp(siteCenter, 0.45);
+      startTarget.y = Math.max(endPose.target.y + 1.8, maxH * 0.44);
+
+      const k0: CameraKeyframe = {
+        target: startTarget,
+        distance: startDist,
+        polar: 0.78,
+        azimuth: endPose.azimuth - 1.15,
+      };
+      const k1: CameraKeyframe = {
+        target: k0.target.clone().lerp(endPose.target, 0.62),
+        distance: THREE.MathUtils.lerp(k0.distance, endPose.distance, 0.55),
+        polar: THREE.MathUtils.lerp(k0.polar, endPose.polar, 0.52),
+        azimuth: endPose.azimuth - 0.48,
+      };
+      keyframes.push(k0, k1, endPose);
+      duration = 2.7;
+    } else {
+      // Sweep from wide site overview -> secondary involved trees -> smoothly land on Tree #1
+      const secondaryTrees = this.trees.slice(1).reverse();
+      const totalSweep = Math.min(1.85, 1.15 + secondaryTrees.length * 0.3);
+      const startDist = THREE.MathUtils.clamp(
+        Math.max(30, maxSpread * 2.05 + maxH * 1.1),
+        30,
+        56
+      );
+
+      keyframes.push({
+        target: new THREE.Vector3(siteCenter.x, Math.max(5.5, maxH * 0.38), siteCenter.z),
+        distance: startDist,
+        polar: 0.73,
+        azimuth: endPose.azimuth - totalSweep,
+      });
+
+      secondaryTrees.forEach((st, idx) => {
+        const frac = (idx + 1) / (secondaryTrees.length + 1);
+        keyframes.push({
+          target: new THREE.Vector3(st.spec.x, Math.max(2.6, st.currentHeight * 0.44), st.spec.z),
+          distance: THREE.MathUtils.clamp(st.currentHeight * 1.35, 16, 34),
+          polar: THREE.MathUtils.lerp(0.96, 1.1, frac),
+          azimuth: endPose.azimuth - totalSweep * (1 - frac),
+        });
+      });
+
+      keyframes.push(endPose);
+      duration = Math.min(4.2, 2.7 + secondaryTrees.length * 0.75);
+    }
+
+    this.cameraCtrl.playIntro(keyframes, duration, () => {
+      this.emitHUD();
+    });
+  }
+
+  private skipIntroToFocus(): void {
+    if (!this.cameraCtrl.isIntroPlaying()) return;
+    this.cameraCtrl.cancelIntro(true);
   }
 
   private buildDropZoneVisual(dz: NonNullable<TreeRuntime['spec']['dropZone']>): THREE.Group {
@@ -711,7 +991,11 @@ export class GameEngine {
 
     this.canvas.addEventListener('pointermove', (e) => {
       this.updatePointerCoords(e);
-      if (this.screen === 'playing' && !this.cameraCtrl.isUserOrbiting()) {
+      if (
+        this.screen === 'playing' &&
+        !this.cameraCtrl.isUserOrbiting() &&
+        !this.cameraCtrl.isIntroPlaying()
+      ) {
         this.handlePointerHover();
       }
     });
@@ -721,6 +1005,10 @@ export class GameEngine {
       if (e.button !== 0 || e.shiftKey) return;
       this.audio.init();
       this.updatePointerCoords(e);
+      if (this.cameraCtrl.isIntroPlaying()) {
+        this.skipIntroToFocus();
+        return;
+      }
       this.isLeftDown = true;
       this.handlePrimaryDown();
     });
@@ -736,6 +1024,14 @@ export class GameEngine {
     // Optional keyboard shortcuts for power users (never required!)
     window.addEventListener('keydown', (e) => {
       if (this.screen !== 'playing') return;
+      if (
+        this.cameraCtrl.isIntroPlaying() &&
+        (e.key === 'Escape' || e.key === ' ' || e.key === 'Enter')
+      ) {
+        e.preventDefault();
+        this.skipIntroToFocus();
+        return;
+      }
       if (e.key === '1') this.setTool('prune');
       else if (e.key === '2') this.setTool('fell');
       else if (e.key === '3') this.setTool('wedge');
@@ -788,6 +1084,8 @@ export class GameEngine {
       const colliders: THREE.Object3D[] = [];
       for (const t of this.trees) {
         if (t.stage === 'falling' || t.stage === 'bucked') continue;
+        // Click & hover right through foreground trees that are ghosted out of the way
+        if (t.spec.id !== this.activeTreeId && t.occlusionFade < 0.55) continue;
         const isFallen = t.stage === 'fallen';
         for (const b of t.branches) {
           if (b.pruned) continue;
@@ -891,7 +1189,9 @@ export class GameEngine {
     const activeTree = this.getActiveTree();
 
     // Check if user clicked a DIFFERENT tree trunk to switch focus (when not aiming/cutting active tree)
-    const trunkMeshes = this.trees.flatMap((t) => t.segments.map((s) => s.barkMesh));
+    const trunkMeshes = this.trees
+      .filter((t) => t.spec.id === this.activeTreeId || t.occlusionFade >= 0.55)
+      .flatMap((t) => t.segments.map((s) => s.barkMesh));
     const trunkHits = this.raycaster.intersectObjects(trunkMeshes, false);
 
     // 1. PRUNE TOOL
@@ -900,6 +1200,8 @@ export class GameEngine {
         this.cuttingBranch = this.hoveredBranch;
         if (this.hoveredBranch.treeId !== this.activeTreeId) {
           this.activeTreeId = this.hoveredBranch.treeId;
+          this.focusCameraForCurrentState(false);
+          this.emitHUD();
         }
         this.audio.setSawActive('prune', 1.0);
         return;
@@ -925,6 +1227,8 @@ export class GameEngine {
         this.cuttingTopCut = topHit;
         if (topHit.tree.spec.id !== this.activeTreeId) {
           this.activeTreeId = topHit.tree.spec.id;
+          this.focusCameraForCurrentState(false);
+          this.emitHUD();
         }
         this.audio.setSawActive('chainsaw', 1.12);
         return;
@@ -998,6 +1302,8 @@ export class GameEngine {
         this.cuttingTopCut = topHit;
         if (topHit.tree.spec.id !== this.activeTreeId) {
           this.activeTreeId = topHit.tree.spec.id;
+          this.focusCameraForCurrentState(false);
+          this.emitHUD();
         }
         this.audio.setSawActive('chainsaw', 1.12);
         return;
@@ -1005,6 +1311,11 @@ export class GameEngine {
       // Directly hovered clear sawlog ring
       if (this.hoveredBuckRing && !this.hoveredBuckRing.ring.cutDone) {
         this.cuttingBuck = this.hoveredBuckRing;
+        if (this.hoveredBuckRing.tree.spec.id !== this.activeTreeId) {
+          this.activeTreeId = this.hoveredBuckRing.tree.spec.id;
+          this.focusCameraForCurrentState(false);
+          this.emitHUD();
+        }
         this.audio.setSawActive('chainsaw', 1.1);
         return;
       }
@@ -1013,7 +1324,11 @@ export class GameEngine {
         const branchTree = this.trees.find((t) => t.spec.id === this.hoveredBranch?.treeId);
         if (branchTree?.stage === 'fallen') {
           this.cuttingBranch = this.hoveredBranch;
-          this.activeTreeId = branchTree.spec.id;
+          if (branchTree.spec.id !== this.activeTreeId) {
+            this.activeTreeId = branchTree.spec.id;
+            this.focusCameraForCurrentState(false);
+            this.emitHUD();
+          }
           this.audio.setSawActive('chainsaw', 1.15);
           return;
         }
@@ -1309,6 +1624,7 @@ export class GameEngine {
     } else {
       tree.completed = true;
       this.checkContractCompletion();
+      this.focusNextIncompleteTree(tree.spec.id);
     }
     this.emitHUD();
   }
@@ -1580,6 +1896,7 @@ export class GameEngine {
                 this.showToast(`${tree.speciesSpec.name} crown cleanly pruned!`, 'good');
                 this.audio.playSuccessChime();
                 this.checkContractCompletion();
+                this.focusNextIncompleteTree(tree.spec.id);
               } else {
                 this.showToast('Hazard limbs cleared & lean reduced! Switch to Chainsaw to fell.', 'good');
                 this.audio.playSuccessChime();
@@ -1942,6 +2259,7 @@ export class GameEngine {
           this.showToast(`All ${tree.totalBuckCuts} prime sawlogs bucked! (+Timber Bonus)`, 'good');
           this.audio.playSuccessChime();
           this.checkContractCompletion();
+          this.focusNextIncompleteTree(tree.spec.id);
         } else {
           this.showToast(`Sawlog sliced free (${tree.buckedCount}/${tree.totalBuckCuts})!`, 'good');
         }
@@ -2007,7 +2325,7 @@ export class GameEngine {
       if (tree.selectionRing.visible) {
         const sMat = tree.selectionRing.material as THREE.MeshBasicMaterial;
         sMat.color.set(tree.completed ? '#22c55e' : isSelected ? '#34d399' : '#94a3b8');
-        sMat.opacity = isSelected ? 0.65 + Math.sin(this.elapsed * 4) * 0.18 : 0.25;
+        sMat.opacity = (isSelected ? 0.65 + Math.sin(this.elapsed * 4) * 0.18 : 0.25) * tree.occlusionFade;
       }
 
       if (tree.stage !== 'falling' && tree.stage !== 'fallen' && tree.stage !== 'bucked') {
@@ -2063,6 +2381,10 @@ export class GameEngine {
           b.collarRing.renderOrder = 0;
           if (b.groundLimbOnly) {
             rMat.opacity = 0.0;
+          } else if (this.cameraCtrl.isIntroPlaying() && b.isTarget) {
+            rMat.color.set('#f59e0b');
+            rMat.opacity = 0.62 + Math.sin(this.elapsed * 4.5) * 0.24;
+            b.collarRing.scale.setScalar(1.06);
           } else if (this.activeTool === 'prune') {
             if (isHov) {
               rMat.color.set(b.isTarget ? '#fef08a' : '#f87171');
@@ -2079,6 +2401,9 @@ export class GameEngine {
             rMat.opacity = b.isTarget ? 0.2 : 0.0;
             b.collarRing.scale.setScalar(1.0);
           }
+        }
+        if (!isSelected && tree.occlusionFade < 0.995) {
+          rMat.opacity *= tree.occlusionFade;
         }
       }
 
@@ -2150,9 +2475,15 @@ export class GameEngine {
       }
     }
 
+    const introPlaying = this.cameraCtrl.isIntroPlaying();
+
     // Hazard perimeter warning rings glow brighter while aiming chainsaw
     if (this.env) {
-      const aimingNow = this.screen === 'playing' && this.activeTool === 'fell' && activeTree?.stage === 'standing';
+      const aimingNow =
+        this.screen === 'playing' &&
+        !introPlaying &&
+        this.activeTool === 'fell' &&
+        activeTree?.stage === 'standing';
       for (const ring of this.env.hazardWarningRings) {
         const mat = ring.material as THREE.MeshBasicMaterial;
         mat.opacity = aimingNow ? 0.45 + Math.sin(this.elapsed * 4) * 0.14 : 0.16;
@@ -2166,6 +2497,7 @@ export class GameEngine {
       this.getNextStandingTopCut(activeTree) !== null;
     const showAim =
       this.screen === 'playing' &&
+      !introPlaying &&
       activeTree !== null &&
       activeTree.spec.task !== 'prune_only' &&
       (this.activeTool === 'fell' || this.activeTool === 'wedge' || showAimForTopCuts) &&
@@ -2231,6 +2563,7 @@ export class GameEngine {
     // Softens once a real cut is visible so it never obscures the carved Humboldt notch!
     const showTrunkRing =
       this.screen === 'playing' &&
+      !introPlaying &&
       activeTree !== null &&
       (this.activeTool === 'fell' || this.activeTool === 'wedge') &&
       (activeTree.stage === 'aimed' || activeTree.stage === 'notched' || activeTree.stage === 'hinge_ready');
@@ -2267,10 +2600,13 @@ export class GameEngine {
 
     // Build dynamic one-line contextual mouse prompt
     let promptText = '';
-    let subPromptText = 'Right-Click Drag or Arrows to Orbit · Scroll or -/= to Zoom';
+    let subPromptText = 'Right-Click Drag to Orbit · Scroll or pinch to Zoom';
 
     if (tree && contract) {
-      if (this.activeTool === 'prune') {
+      if (this.cameraCtrl.isIntroPlaying()) {
+        promptText = `Site Survey · ${contract.title}`;
+        subPromptText = 'Click, scroll, or right-drag to skip intro';
+      } else if (this.activeTool === 'prune') {
         const rem = Math.max(0, tree.spec.hazardBranches - tree.prunedTargetCount);
         if (rem > 0) {
           promptText = `Hover an amber-flagged limb & hold Left-Click to prune (${rem} left)`;
@@ -2415,6 +2751,7 @@ export class GameEngine {
           const done = t.prunedTargetCount >= t.spec.hazardBranches;
           objectives.push({
             id: `${t.spec.id}-prune`,
+            treeId: t.spec.id,
             text: `Prune ${t.speciesSpec.name} hazard limbs`,
             done,
             progress: `${t.prunedTargetCount}/${t.spec.hazardBranches}`,
@@ -2425,6 +2762,7 @@ export class GameEngine {
           const done = t.topCutsCompleted >= t.standingTopCuts.length;
           objectives.push({
             id: `${t.spec.id}-top`,
+            treeId: t.spec.id,
             text: `Piece down ${t.speciesSpec.name} to ≤${targetH}m`,
             done,
             progress: `${t.topCutsCompleted}/${t.standingTopCuts.length}`,
@@ -2434,6 +2772,7 @@ export class GameEngine {
           const fellDone = t.stage === 'fallen' || t.stage === 'bucked';
           objectives.push({
             id: `${t.spec.id}-fell`,
+            treeId: t.spec.id,
             text: `Fell ${t.speciesSpec.name} into ${t.spec.dropZone?.label ?? 'clearing'}`,
             done: fellDone,
             progress: fellDone ? (t.hitHazards.length === 0 ? 'Safe' : 'Hit!') : undefined,
@@ -2441,6 +2780,7 @@ export class GameEngine {
           if (t.spec.requireBucking) {
             objectives.push({
               id: `${t.spec.id}-buck`,
+              treeId: t.spec.id,
               text: `Buck ${t.speciesSpec.name} into sawlogs`,
               done: t.stage === 'bucked',
               progress: `${t.buckedCount}/${t.totalBuckCuts}`,
@@ -2509,11 +2849,15 @@ export class GameEngine {
       this.currentContract?.windAngle ?? 0.5
     );
 
-    // Subtle shimmer on creek / coastal inlet water
+    // Subtle shimmer on creek / coastal inlet / headland cove water
     if (this.env?.waterMesh) {
-      this.env.waterMesh.position.y =
-        (this.currentContract?.site === 'storm_bluff' ? -4.5 : 0.04) +
-        Math.sin(this.elapsed * 1.8) * 0.02;
+      const baseWaterY =
+        this.currentContract?.site === 'storm_bluff'
+          ? -4.5
+          : this.currentContract?.site === 'pacific_headland'
+            ? -4.2
+            : 0.04;
+      this.env.waterMesh.position.y = baseWaterY + Math.sin(this.elapsed * 1.8) * 0.02;
     }
 
     this.renderer.render(this.scene, this.camera);

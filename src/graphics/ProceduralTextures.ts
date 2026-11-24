@@ -184,6 +184,183 @@ class TextureCache {
         bctx.fillStyle = '#505050';
         bctx.fillRect(x, y, w, 2);
       }
+    } else if (spec.barkStyle === 'smooth_bronze') {
+      // Japanese Maple: smooth silvery-bronze bark with delicate pale vertical striations
+      for (let i = 0; i < 150; i++) {
+        const x = rand() * size;
+        const w = 2 + rand() * 5;
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(155, 134, 126, 0.25)' : 'rgba(62, 46, 46, 0.28)';
+        ctx.fillRect(x, 0, w, size);
+        bctx.fillStyle = rand() > 0.5 ? '#909090' : '#707070';
+        bctx.fillRect(x, 0, w, size);
+      }
+      for (let i = 0; i < 95; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        ctx.fillStyle = 'rgba(188, 174, 166, 0.26)';
+        ctx.fillRect(x, y, 6 + rand() * 14, 1.5);
+      }
+    } else if (spec.barkStyle === 'white_diamond') {
+      // White Poplar: chalky pale silver-white bark with dark charcoal diamond-shaped lenticels
+      for (let i = 0; i < 90; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const rx = 18 + rand() * 44;
+        const ry = 22 + rand() * 52;
+        ctx.fillStyle = rand() > 0.45 ? 'rgba(232, 236, 228, 0.45)' : 'rgba(176, 184, 174, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Signature dark diamond lenticel scars
+      for (let i = 0; i < 145; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const dw = 6 + rand() * 14;
+        const dh = 3 + rand() * 6;
+        ctx.fillStyle = rand() > 0.35 ? 'rgba(42, 44, 40, 0.78)' : 'rgba(68, 70, 65, 0.65)';
+        ctx.beginPath();
+        ctx.moveTo(x - dw, y);
+        ctx.lineTo(x, y - dh);
+        ctx.lineTo(x + dw, y);
+        ctx.lineTo(x, y + dh);
+        ctx.closePath();
+        ctx.fill();
+
+        bctx.fillStyle = '#383838';
+        bctx.beginPath();
+        bctx.moveTo(x - dw, y);
+        bctx.lineTo(x, y - dh);
+        bctx.lineTo(x + dw, y);
+        bctx.lineTo(x, y + dh);
+        bctx.closePath();
+        bctx.fill();
+      }
+    } else if (spec.barkStyle === 'peeling_terracotta') {
+      // Pacific Arbutus: smooth cinnamon-terracotta bark with chartreuse-ochre freshly peeled underbark & curling flakes
+      for (let i = 0; i < 48; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const rx = 20 + rand() * 54;
+        const ry = 32 + rand() * 88;
+        ctx.fillStyle =
+          rand() > 0.62
+            ? 'rgba(202, 186, 122, 0.72)' // freshly peeled chartreuse-ochre satin underbark
+            : rand() > 0.35
+              ? 'rgba(196, 98, 60, 0.55)'
+              : 'rgba(130, 44, 28, 0.52)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, (rand() - 0.5) * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Thin curled papery cinnamon bark edges
+      for (let i = 0; i < 85; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const h = 24 + rand() * 68;
+        ctx.strokeStyle = rand() > 0.5 ? 'rgba(92, 28, 16, 0.68)' : 'rgba(222, 134, 88, 0.5)';
+        ctx.lineWidth = 2 + rand() * 3.5;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + (rand() - 0.5) * 26, y + h * 0.5, x + (rand() - 0.5) * 14, y + h);
+        ctx.stroke();
+
+        bctx.strokeStyle = '#c8c8c8';
+        bctx.lineWidth = 2;
+        bctx.beginPath();
+        bctx.moveTo(x, y);
+        bctx.lineTo(x + (rand() - 0.5) * 12, y + h);
+        bctx.stroke();
+      }
+    } else if (spec.barkStyle === 'pale_checkered') {
+      // Garry Oak: pale ash-gray bark broken into blocky checkered scales & subtle pale lichen
+      for (let i = 0; i < 190; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 14 + rand() * 24;
+        const h = 18 + rand() * 34;
+        ctx.fillStyle = rand() > 0.45 ? '#9c998e' : spec.barkSecondary;
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = 'rgba(46, 44, 38, 0.72)';
+        ctx.lineWidth = 2.2;
+        ctx.strokeRect(x, y, w, h);
+
+        bctx.fillStyle = rand() > 0.5 ? '#c6c6c6' : '#4e4e4e';
+        bctx.fillRect(x, y, w, h);
+      }
+      // Subtle pale coastal oak lichen patches
+      for (let i = 0; i < 55; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const r = 10 + rand() * 22;
+        ctx.fillStyle = 'rgba(154, 174, 138, 0.34)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, r, r * 0.75, rand() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (spec.barkStyle === 'redwood_fluted') {
+      // California Redwood: thick, deeply fluted spongy cinnamon-crimson ridges
+      for (let i = 0; i < 115; i++) {
+        const x = rand() * size;
+        const w = 6 + rand() * 14;
+        ctx.strokeStyle = rand() > 0.45 ? spec.barkSecondary : '#3a120b';
+        ctx.lineWidth = w;
+        ctx.beginPath();
+        let cx = x;
+        ctx.moveTo(cx, 0);
+        for (let y = 0; y <= size; y += 36) {
+          cx += (rand() - 0.5) * 4.5;
+          ctx.lineTo(cx, y);
+        }
+        ctx.stroke();
+
+        bctx.strokeStyle = '#242424';
+        bctx.lineWidth = w;
+        bctx.beginPath();
+        bctx.moveTo(x, 0);
+        bctx.lineTo(cx, size);
+        bctx.stroke();
+      }
+      // Rich fibrous rust-red highlight ribs
+      for (let i = 0; i < 160; i++) {
+        const x = rand() * size;
+        const w = 3 + rand() * 7;
+        ctx.fillStyle = rand() > 0.5 ? 'rgba(164, 72, 46, 0.38)' : 'rgba(132, 52, 34, 0.32)';
+        ctx.fillRect(x, 0, w, size);
+        bctx.fillStyle = 'rgba(235, 235, 235, 0.35)';
+        bctx.fillRect(x, 0, w, size);
+      }
+    } else if (spec.barkStyle === 'peeling_eucalyptus') {
+      // Blue Gum Eucalyptus: long vertical ribbons of cream, buff, and blue-gray peeling bark
+      for (let i = 0; i < 95; i++) {
+        const x = rand() * size;
+        const w = 10 + rand() * 28;
+        const palette = [
+          'rgba(222, 215, 196, 0.72)', // creamy smooth inner bark
+          'rgba(146, 160, 162, 0.62)', // blue-slate coastal hue
+          'rgba(186, 174, 152, 0.58)', // warm tan-buff
+          'rgba(104, 98, 86, 0.65)',   // outer gray shedding ribbon
+        ];
+        ctx.fillStyle = palette[Math.floor(rand() * palette.length)];
+        ctx.beginPath();
+        let cx = x;
+        ctx.moveTo(cx, 0);
+        for (let y = 0; y <= size; y += 48) {
+          cx += (rand() - 0.5) * 8;
+          ctx.lineTo(cx, y);
+        }
+        ctx.lineTo(cx + w, size);
+        ctx.lineTo(x + w, 0);
+        ctx.closePath();
+        ctx.fill();
+
+        bctx.strokeStyle = rand() > 0.5 ? '#c4c4c4' : '#525252';
+        bctx.lineWidth = 2.5;
+        bctx.beginPath();
+        bctx.moveTo(x, 0);
+        bctx.lineTo(cx, size);
+        bctx.stroke();
+      }
     } else {
       // Western Hemlock: russet-brown flat plates & narrow dark grooves
       for (let i = 0; i < 160; i++) {
@@ -288,7 +465,9 @@ class TextureCache {
     return tex;
   }
 
-  public getTerrainTexture(style: 'homestead' | 'creek' | 'ridge' | 'bluff'): THREE.CanvasTexture {
+  public getTerrainTexture(
+    style: 'homestead' | 'creek' | 'ridge' | 'bluff' | 'suburban' | 'headland'
+  ): THREE.CanvasTexture {
     const cached = this.terrainCache.get(style);
     if (cached) return cached;
 
@@ -304,11 +483,23 @@ class TextureCache {
       creek: { base: '#406a36', mid: '#538244', dark: '#2e5128', duff: '#5c523b' },
       ridge: { base: '#425e2f', mid: '#55733b', dark: '#304723', duff: '#675034' },
       bluff: { base: '#51693b', mid: '#657d48', dark: '#3c502b', duff: '#705e42' },
+      suburban: { base: '#4e833a', mid: '#639948', dark: '#3e6e2e', duff: '#5a7838' },
+      headland: { base: '#6b7b3e', mid: '#88944c', dark: '#4d5c2d', duff: '#9b8d56' },
     };
     const p = palettes[style];
 
     ctx.fillStyle = p.base;
     ctx.fillRect(0, 0, size, size);
+
+    // Subtle mowed lawn bands for coastal town yards
+    if (style === 'suburban') {
+      const stripes = 8;
+      const sh = size / stripes;
+      for (let i = 0; i < stripes; i++) {
+        ctx.fillStyle = i % 2 === 0 ? 'rgba(130, 185, 86, 0.13)' : 'rgba(34, 66, 26, 0.10)';
+        ctx.fillRect(0, i * sh, size, sh);
+      }
+    }
 
     // Organic mossy / meadow patches
     for (let i = 0; i < 240; i++) {
@@ -443,6 +634,49 @@ class TextureCache {
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(1, 6);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.terrainCache.set(key, tex);
+    return tex;
+  }
+
+  public getAsphaltTexture(): THREE.CanvasTexture {
+    const key = 'coastal_asphalt';
+    const cached = this.terrainCache.get(key);
+    if (cached) return cached;
+
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const rand = createSeededRandom(8817);
+
+    ctx.fillStyle = '#474c52';
+    ctx.fillRect(0, 0, size, size);
+
+    // Fine coastal asphalt aggregate & subtle wear
+    for (let i = 0; i < 2800; i++) {
+      const x = rand() * size;
+      const y = rand() * size;
+      const v = 56 + Math.floor(rand() * 44);
+      ctx.fillStyle = `rgb(${v}, ${v + 2}, ${v + 5})`;
+      ctx.fillRect(x, y, 2, 2);
+    }
+
+    // Curb edge shading
+    ctx.fillStyle = 'rgba(25, 28, 32, 0.25)';
+    ctx.fillRect(0, 0, size, 12);
+    ctx.fillRect(0, size - 12, size, 12);
+
+    // Dashed weathered yellow road centerline (horizontal along road length)
+    ctx.fillStyle = '#dfb54b';
+    ctx.fillRect(28, size * 0.5 - 4, 86, 8);
+    ctx.fillRect(156, size * 0.5 - 4, 72, 8);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.repeat.set(10, 1);
     tex.colorSpace = THREE.SRGBColorSpace;
     this.terrainCache.set(key, tex);
     return tex;

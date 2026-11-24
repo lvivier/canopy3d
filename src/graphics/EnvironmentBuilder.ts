@@ -30,7 +30,7 @@ function makeRng(seed: number): () => number {
  */
 export function getTerrainHeight(x: number, z: number, site: SiteId): number {
   const dist = Math.hypot(x, z);
-  const flatRadius = 23;
+  const flatRadius = site === 'coastal_town' ? 27 : 23;
   if (dist <= flatRadius) return 0;
 
   const t = Math.min(1, (dist - flatRadius) / 42);
@@ -49,8 +49,18 @@ export function getTerrainHeight(x: number, z: number, site: SiteId): number {
     const cliffSlope = (-x * 0.16 - z * 0.12) * smooth;
     return Math.max(-7, smooth * (4.0 + ridgeNoise * 0.75) + cliffSlope);
   }
+  if (site === 'pacific_headland') {
+    // Sunlit coastal savanna headland sloping toward a deep Pacific cove on +X/+Z
+    const coveSlope = (-x * 0.14 - z * 0.15) * smooth;
+    return Math.max(-6.5, smooth * (3.6 + ridgeNoise * 0.68) + coveSlope);
+  }
   if (site === 'misty_creek') {
     return smooth * (6.2 + ridgeNoise * 0.85);
+  }
+  if (site === 'coastal_town') {
+    // Keep the east-west town street level while wooded hills rise gently behind the neighborhood
+    const roadKeepFlat = Math.abs(z - 16.5) < 9 ? 0.15 : 1.0;
+    return smooth * roadKeepFlat * (4.2 + ridgeNoise * 0.58);
   }
   return smooth * (5.2 + ridgeNoise * 0.72);
 }
@@ -444,11 +454,246 @@ function buildProtectedSapling(): THREE.Group {
   return g;
 }
 
+function buildCoastalHouse(sidingColor = '#6b827b'): THREE.Group {
+  const g = new THREE.Group();
+  const sidingTex = textureCache.getWoodPlankTexture(sidingColor, 14);
+  const wallMat = new THREE.MeshStandardMaterial({ map: sidingTex, roughness: 0.8 });
+  const roofMat = new THREE.MeshStandardMaterial({ color: '#394048', roughness: 0.88, flatShading: true });
+  const trimMat = new THREE.MeshStandardMaterial({ color: '#f3f1eb', roughness: 0.65 });
+  const brickMat = new THREE.MeshStandardMaterial({ color: '#8a4c3d', roughness: 0.92 });
+  const windowMat = new THREE.MeshStandardMaterial({
+    color: '#ffe8a8',
+    emissive: '#f59e0b',
+    emissiveIntensity: 0.5,
+    roughness: 0.18,
+  });
+
+  // Main Craftsman bungalow body
+  const body = new THREE.Mesh(new THREE.BoxGeometry(8.4, 3.9, 6.4), wallMat);
+  body.position.y = 1.95;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+
+  // Crisp white corner trim & foundation plinth
+  const base = new THREE.Mesh(new THREE.BoxGeometry(8.6, 0.45, 6.6), new THREE.MeshStandardMaterial({ color: '#7b8082', roughness: 0.95 }));
+  base.position.y = 0.22;
+  g.add(base);
+
+  // Wide Craftsman gable roof
+  const roofShape = new THREE.Shape();
+  roofShape.moveTo(-4.9, 0);
+  roofShape.lineTo(0, 2.5);
+  roofShape.lineTo(4.9, 0);
+  roofShape.closePath();
+  const roofGeo = new THREE.ExtrudeGeometry(roofShape, { depth: 7.4, bevelEnabled: false });
+  roofGeo.translate(0, 0, -3.7);
+  const roof = new THREE.Mesh(roofGeo, roofMat);
+  roof.position.y = 3.85;
+  roof.castShadow = true;
+  roof.receiveShadow = true;
+  g.add(roof);
+
+  // Front porch & white Craftsman columns
+  const porch = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.35, 1.9), new THREE.MeshStandardMaterial({ color: '#777e80', roughness: 0.9 }));
+  porch.position.set(0, 0.18, 4.05);
+  porch.receiveShadow = true;
+  g.add(porch);
+  for (const px of [-2.9, -1.0, 1.0, 2.9]) {
+    const col = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.0, 0.24), trimMat);
+    col.position.set(px, 1.7, 4.75);
+    col.castShadow = true;
+    g.add(col);
+  }
+  const porchRoof = new THREE.Mesh(new THREE.BoxGeometry(7.2, 0.22, 2.3), roofMat);
+  porchRoof.position.set(0, 3.32, 4.15);
+  porchRoof.rotation.x = 0.18;
+  porchRoof.castShadow = true;
+  g.add(porchRoof);
+
+  // Brick chimney
+  const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.95, 6.4, 0.95), brickMat);
+  chimney.position.set(-3.1, 3.2, -1.4);
+  chimney.castShadow = true;
+  g.add(chimney);
+
+  // Framed windows + front door
+  for (const wx of [-2.4, 2.4]) {
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.65, 1.48, 0.12), trimMat);
+    frame.position.set(wx, 2.15, 3.22);
+    g.add(frame);
+    const pane = new THREE.Mesh(new THREE.BoxGeometry(1.42, 1.25, 0.15), windowMat);
+    pane.position.set(wx, 2.15, 3.24);
+    g.add(pane);
+    const sidePane = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1.25, 1.45), windowMat);
+    sidePane.position.set(4.22, 2.15, wx * 0.4);
+    g.add(sidePane);
+  }
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.15, 2.35, 0.16), new THREE.MeshStandardMaterial({ color: '#7c342b', roughness: 0.72 }));
+  door.position.set(0, 1.4, 3.22);
+  g.add(door);
+
+  return g;
+}
+
+function buildGreenhouse(): THREE.Group {
+  const g = new THREE.Group();
+  const frameMat = new THREE.MeshStandardMaterial({ color: '#8a5c3c', roughness: 0.85 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: '#c9edf2',
+    roughness: 0.15,
+    metalness: 0.12,
+    transparent: true,
+    opacity: 0.48,
+  });
+  const plantMat = new THREE.MeshStandardMaterial({ color: '#3b8c3e', roughness: 0.8, flatShading: true });
+
+  // Low cedar knee-wall base
+  const base = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.75, 3.4), frameMat);
+  base.position.y = 0.38;
+  base.castShadow = true;
+  base.receiveShadow = true;
+  g.add(base);
+
+  // Glass walls
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(4.25, 1.85, 3.25), glassMat);
+  walls.position.y = 1.65;
+  g.add(walls);
+
+  // Glass gable roof
+  const roofShape = new THREE.Shape();
+  roofShape.moveTo(-2.2, 0);
+  roofShape.lineTo(0, 1.25);
+  roofShape.lineTo(2.2, 0);
+  roofShape.closePath();
+  const roofGeo = new THREE.ExtrudeGeometry(roofShape, { depth: 3.35, bevelEnabled: false });
+  roofGeo.translate(0, 0, -1.675);
+  const roof = new THREE.Mesh(roofGeo, glassMat);
+  roof.position.y = 2.55;
+  g.add(roof);
+
+  // Timber frame corner posts & ridge beam
+  for (const [cx, cz] of [
+    [-2.15, -1.65],
+    [2.15, -1.65],
+    [-2.15, 1.65],
+    [2.15, 1.65],
+  ]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.6, 0.14), frameMat);
+    post.position.set(cx, 1.3, cz);
+    post.castShadow = true;
+    g.add(post);
+  }
+  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 3.45), frameMat);
+  ridge.position.y = 3.8;
+  g.add(ridge);
+
+  // Tiny lush potted plants visible inside!
+  for (let i = -1; i <= 1; i++) {
+    const pot = new THREE.Mesh(new THREE.DodecahedronGeometry(0.36, 0), plantMat);
+    pot.position.set(i * 1.15, 1.15, -0.7);
+    g.add(pot);
+    const pot2 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.32, 0), plantMat);
+    pot2.position.set(i * 1.1, 1.1, 0.75);
+    g.add(pot2);
+  }
+
+  return g;
+}
+
+function buildPicketFence(length = 8.5): THREE.Group {
+  const g = new THREE.Group();
+  const whiteMat = new THREE.MeshStandardMaterial({ color: '#f1f2ee', roughness: 0.68 });
+  const posts = Math.max(3, Math.round(length / 2.6) + 1);
+  for (let i = 0; i < posts; i++) {
+    const px = -length / 2 + (i / (posts - 1)) * length;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.28, 0.14), whiteMat);
+    post.position.set(px, 0.64, 0);
+    post.castShadow = true;
+    g.add(post);
+  }
+  for (const ry of [0.36, 0.92]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(length, 0.08, 0.08), whiteMat);
+    rail.position.set(0, ry, 0);
+    g.add(rail);
+  }
+  const picketCount = Math.max(12, Math.round(length * 3.8));
+  for (let i = 0; i < picketCount; i++) {
+    const px = -length / 2 + 0.14 + (i / Math.max(1, picketCount - 1)) * (length - 0.28);
+    const picket = new THREE.Mesh(new THREE.BoxGeometry(0.11, 1.16, 0.04), whiteMat);
+    picket.position.set(px, 0.58, 0.04);
+    picket.castShadow = true;
+    g.add(picket);
+  }
+  return g;
+}
+
+function buildStationWagon(): THREE.Group {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: '#3b6d7c', roughness: 0.35, metalness: 0.28 });
+  const glassMat = new THREE.MeshStandardMaterial({ color: '#9ec0cc', roughness: 0.18, metalness: 0.45 });
+  const wheelMat = new THREE.MeshStandardMaterial({ color: '#222529', roughness: 0.88 });
+  const rackMat = new THREE.MeshStandardMaterial({ color: '#2c3036', roughness: 0.6, metalness: 0.4 });
+
+  // Lower body
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.72, 4.35), bodyMat);
+  chassis.position.y = 0.68;
+  chassis.castShadow = true;
+  chassis.receiveShadow = true;
+  g.add(chassis);
+
+  // Wagon greenhouse cab
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.68, 2.65), bodyMat);
+  cab.position.set(0, 1.32, -0.35);
+  cab.castShadow = true;
+  g.add(cab);
+
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.52, 2.38), glassMat);
+  glass.position.set(0, 1.32, -0.32);
+  g.add(glass);
+
+  // PNW roof rack bars
+  for (const rz of [-1.25, 0.45]) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.56, 0.06, 0.08), rackMat);
+    bar.position.set(0, 1.72, rz);
+    g.add(bar);
+  }
+
+  // Wheels
+  const wGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.26, 14);
+  wGeo.rotateZ(Math.PI / 2);
+  for (const [wx, wz] of [
+    [-0.92, 1.32],
+    [0.92, 1.32],
+    [-0.92, -1.32],
+    [0.92, -1.32],
+  ]) {
+    const w = new THREE.Mesh(wGeo, wheelMat);
+    w.position.set(wx, 0.36, wz);
+    w.castShadow = true;
+    g.add(w);
+  }
+
+  return g;
+}
+
 function buildHazardMesh(h: HazardSpec): THREE.Group {
   let g: THREE.Group;
   switch (h.type) {
     case 'cabin':
       g = buildCabin();
+      break;
+    case 'house':
+      g = buildCoastalHouse();
+      break;
+    case 'greenhouse':
+      g = buildGreenhouse();
+      break;
+    case 'picket_fence':
+      g = buildPicketFence(h.width ?? 8.5);
+      break;
+    case 'car':
+      g = buildStationWagon();
       break;
     case 'barn':
       g = buildBarn();
@@ -585,7 +830,11 @@ export function buildEnvironment(
         ? 'creek'
         : contract.site === 'timber_ridge'
           ? 'ridge'
-          : 'bluff';
+          : contract.site === 'coastal_town'
+            ? 'suburban'
+            : contract.site === 'pacific_headland'
+              ? 'headland'
+              : 'bluff';
 
   const terrainGeo = new THREE.PlaneGeometry(240, 240, 96, 96);
   terrainGeo.rotateX(-Math.PI / 2);
@@ -690,6 +939,155 @@ export function buildEnvironment(
     waterMesh.rotation.x = -Math.PI / 2;
     waterMesh.position.set(60, -4.5, 65);
     group.add(waterMesh);
+  } else if (contract.site === 'pacific_headland') {
+    // 1) Shimmering Pacific Cove stretching out below the headland bluffs
+    const oceanMat = new THREE.MeshStandardMaterial({
+      color: '#225e74',
+      roughness: 0.2,
+      metalness: 0.54,
+    });
+    waterMesh = new THREE.Mesh(new THREE.PlaneGeometry(260, 150), oceanMat);
+    waterMesh.rotation.x = -Math.PI / 2;
+    waterMesh.position.set(55, -4.2, 68);
+    group.add(waterMesh);
+
+    // 2) Sun-bleached coastal granite outcrops lining the headland bluff rim
+    const outcropGeo = new THREE.DodecahedronGeometry(1.8, 1);
+    const outcropMat = new THREE.MeshStandardMaterial({
+      color: '#8e8a7e',
+      roughness: 0.92,
+      flatShading: true,
+    });
+    const outcropSpots: Array<[number, number, number, number]> = [
+      [22.5, 13.5, 1.5, 0.9],
+      [18.5, 22.0, 2.0, 1.1],
+      [9.0, 24.5, 1.7, 0.85],
+      [25.5, 3.5, 1.8, 1.0],
+      [-2.5, 25.0, 1.5, 0.8],
+      [28.0, 19.5, 2.4, 1.3],
+      [14.0, 29.0, 2.3, 1.2],
+    ];
+    for (const [ox, oz, sx, sy] of outcropSpots) {
+      const rock = new THREE.Mesh(outcropGeo, outcropMat);
+      const oy = getTerrainHeight(ox, oz, contract.site);
+      rock.position.set(ox, oy + sy * 0.45, oz);
+      rock.scale.set(sx, sy, sx * (0.75 + rand() * 0.4));
+      rock.rotation.set((rand() - 0.5) * 0.25, rand() * Math.PI * 2, (rand() - 0.5) * 0.25);
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      group.add(rock);
+    }
+
+    // 3) Sandy coastal overlook trail ribbon curving around the seaward meadow edge
+    const trailMat = new THREE.MeshStandardMaterial({
+      color: '#a89a78',
+      roughness: 0.96,
+    });
+    const trailPts = [
+      new THREE.Vector2(-24, 18),
+      new THREE.Vector2(-8, 19.5),
+      new THREE.Vector2(8, 18.2),
+      new THREE.Vector2(19.5, 11.5),
+      new THREE.Vector2(22.5, -6),
+    ];
+    for (let i = 0; i < trailPts.length - 1; i++) {
+      const a = trailPts[i];
+      const b = trailPts[i + 1];
+      const len = a.distanceTo(b);
+      const seg = new THREE.Mesh(new THREE.PlaneGeometry(len + 0.8, 2.4), trailMat);
+      seg.rotation.x = -Math.PI / 2;
+      seg.rotation.z = -Math.atan2(b.y - a.y, b.x - a.x);
+      seg.position.set((a.x + b.x) * 0.5, 0.03, (a.y + b.y) * 0.5);
+      seg.receiveShadow = true;
+      group.add(seg);
+    }
+
+    // Weathered driftwood-cedar overlook bench facing the Pacific cove
+    const bench = new THREE.Group();
+    const benchWood = new THREE.MeshStandardMaterial({ color: '#7a6855', roughness: 0.9 });
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.14, 0.65), benchWood);
+    seat.position.y = 0.56;
+    seat.castShadow = true;
+    bench.add(seat);
+    for (const lx of [-0.9, 0.9]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.54, 0.55), benchWood);
+      leg.position.set(lx, 0.27, 0);
+      leg.castShadow = true;
+      bench.add(leg);
+    }
+    bench.position.set(17.5, 0, 15.5);
+    bench.rotation.y = -0.68;
+    group.add(bench);
+  } else if (contract.site === 'coastal_town') {
+    // 1) Coastal Town Asphalt Street running East-West along the front of the yards
+    const roadMat = new THREE.MeshStandardMaterial({
+      map: textureCache.getAsphaltTexture(),
+      roughness: 0.9,
+      metalness: 0.04,
+    });
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(160, 6.8), roadMat);
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(0, 0.03, 16.5);
+    road.receiveShadow = true;
+    group.add(road);
+
+    // Pale coastal concrete sidewalks on both sides of the street
+    const walkMat = new THREE.MeshStandardMaterial({ color: '#c4c7c2', roughness: 0.92 });
+    for (const sz of [12.45, 20.55]) {
+      const walk = new THREE.Mesh(new THREE.BoxGeometry(160, 0.08, 1.3), walkMat);
+      walk.position.set(0, 0.04, sz);
+      walk.receiveShadow = true;
+      group.add(walk);
+    }
+
+    // 2) Backyard Garden Pond (ideal setting for pondside Weeping Willows!)
+    const pondShape = new THREE.Shape();
+    pondShape.absellipse(0, 0, 4.6, 3.5, 0, Math.PI * 2, false, 0.18);
+    const pondGeo = new THREE.ShapeGeometry(pondShape, 24);
+    pondGeo.rotateX(-Math.PI / 2);
+    const pondMat = new THREE.MeshStandardMaterial({
+      color: '#2c767c',
+      roughness: 0.14,
+      metalness: 0.45,
+      transparent: true,
+      opacity: 0.86,
+    });
+    waterMesh = new THREE.Mesh(pondGeo, pondMat);
+    waterMesh.position.set(-11.5, 0.05, -9.5);
+    waterMesh.receiveShadow = true;
+    group.add(waterMesh);
+
+    // River-cobble border around the backyard pond
+    const cobbleGeo = new THREE.DodecahedronGeometry(0.42, 0);
+    const cobbleMat = new THREE.MeshStandardMaterial({ color: '#838782', roughness: 0.92, flatShading: true });
+    for (let i = 0; i < 26; i++) {
+      const a = (i / 26) * Math.PI * 2;
+      const cob = new THREE.Mesh(cobbleGeo, cobbleMat);
+      cob.position.set(
+        -11.5 + Math.cos(a) * 4.75,
+        0.1,
+        -9.5 + Math.sin(a) * 3.65
+      );
+      cob.scale.set(1.15 + rand() * 0.5, 0.48 + rand() * 0.2, 1.0 + rand() * 0.45);
+      cob.rotation.y = rand() * Math.PI * 2;
+      cob.receiveShadow = true;
+      group.add(cob);
+    }
+
+    // 3) Mid-background neighboring coastal Craftsman houses along the block
+    const neighborSpecs: Array<{ x: number; z: number; rot: number; color: string }> = [
+      { x: -29, z: 4.5, rot: 0.05, color: '#788894' },
+      { x: 29, z: 3.5, rot: -0.08, color: '#8c7d68' },
+      { x: -22, z: 28.5, rot: Math.PI - 0.06, color: '#6b827b' },
+      { x: 2, z: 29.0, rot: Math.PI + 0.04, color: '#84706c' },
+      { x: 26, z: 28.5, rot: Math.PI - 0.05, color: '#6d7f8c' },
+    ];
+    for (const ns of neighborSpecs) {
+      const nh = buildCoastalHouse(ns.color);
+      nh.position.set(ns.x, getTerrainHeight(ns.x, ns.z, contract.site), ns.z);
+      nh.rotation.y = ns.rot;
+      group.add(nh);
+    }
   }
 
   // 5. Place Hazards & Subtle Warning Rings
@@ -737,12 +1135,18 @@ export function buildEnvironment(
     const fx = Math.cos(angle) * dist;
     const fz = Math.sin(angle) * dist;
 
-    // Avoid spawning inside trees, driveway center, misty creek water, or hazards
+    // Avoid spawning inside trees, driveway center, misty creek water, town street/pond, or hazards
     const onDriveway = contract.site === 'coastal_homestead' && Math.abs(fx - 1.2) < 3.0 && fz > -2;
     const inCreek = contract.site === 'misty_creek' && fz > 4.5 && fz < 21.5;
+    const onTownRoad = contract.site === 'coastal_town' && fz > 11.2 && fz < 22.0;
+    const inTownPond = contract.site === 'coastal_town' && Math.hypot((fx + 11.5) / 5.2, (fz + 9.5) / 4.2) < 1.05;
+    const inTownCentralLawn = contract.site === 'coastal_town' && Math.hypot(fx, fz) < 11.5;
     const tooClose =
       onDriveway ||
       inCreek ||
+      onTownRoad ||
+      inTownPond ||
+      inTownCentralLawn ||
       contract.trees.some((t) => Math.hypot(t.x - fx, t.z - fz) < 2.2) ||
       contract.hazards.some((h) => Math.hypot(h.x - fx, h.z - fz) < h.radius + 1.1);
     if (tooClose) continue;
@@ -779,6 +1183,8 @@ export function buildEnvironment(
     const z = Math.sin(a) * d;
     if (contract.site === 'coastal_homestead' && Math.abs(x - 1.2) < 3.0 && z > -2) continue;
     if (contract.site === 'misty_creek' && z > 4.5 && z < 21.5) continue;
+    if (contract.site === 'coastal_town' && z > 11.2 && z < 22.0) continue;
+    if (contract.site === 'coastal_town' && Math.hypot((x + 11.5) / 5.2, (z + 9.5) / 4.2) < 1.0) continue;
     if (contract.hazards.some((h) => Math.hypot(h.x - x, h.z - z) < h.radius + 1.0)) continue;
     const y = getTerrainHeight(x, z, contract.site);
     dummy.position.set(x, y, z);
@@ -802,16 +1208,17 @@ export function buildEnvironment(
     roughness: 0.95,
     flatShading: true,
   });
-  const rockCount = 42;
+  const rockCount = contract.site === 'coastal_town' ? 14 : 42;
   const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
   rockInst.castShadow = true;
   rockInst.receiveShadow = true;
   let rIdx = 0;
   for (let tries = 0; tries < 180 && rIdx < rockCount; tries++) {
     const a = rand() * Math.PI * 2;
-    const d = 11 + rand() * 34;
+    const d = (contract.site === 'coastal_town' ? 19 : 11) + rand() * 34;
     const rx = Math.cos(a) * d;
     const rz = Math.sin(a) * d;
+    if (contract.site === 'coastal_town' && rz > 10.5 && rz < 23.0) continue;
     if (contract.hazards.some((h) => Math.hypot(h.x - rx, h.z - rz) < h.radius + 2.2)) continue;
     const ry = getTerrainHeight(rx, rz, contract.site);
     const sx = 0.6 + rand() * 1.4;
@@ -928,12 +1335,15 @@ export function buildEnvironment(
   let tPlaced = 0;
   for (let i = 0; i < bgTreeCount * 2 && tPlaced < bgTreeCount; i++) {
     const angle = rand() * Math.PI * 2;
-    // Leave scenic ocean overlook gap on storm_bluff
+    // Leave scenic ocean overlook gap on storm_bluff and pacific_headland
     if (contract.site === 'storm_bluff' && angle > 0.25 && angle < 1.35) continue;
+    if (contract.site === 'pacific_headland' && angle > 0.15 && angle < 1.55) continue;
 
-    const dist = 25 + rand() * 68;
+    const dist = (contract.site === 'coastal_town' ? 36 : 25) + rand() * 68;
     const tx = Math.cos(angle) * dist;
     const tz = Math.sin(angle) * dist;
+    // Keep the town street corridor clear of backdrop forest trunks
+    if (contract.site === 'coastal_town' && tz > 10.0 && tz < 24.0) continue;
     const ty = getTerrainHeight(tx, tz, contract.site);
     const scale = 0.72 + rand() * 0.95;
     const sx = scale * (0.85 + rand() * 0.3);

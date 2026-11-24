@@ -6,13 +6,25 @@ export type SpeciesId =
   | 'sitka_spruce'
   | 'bigleaf_maple'
   | 'red_alder'
-  | 'western_hemlock';
+  | 'western_hemlock'
+  | 'weeping_willow'
+  | 'japanese_maple'
+  | 'lilac'
+  | 'smoke_tree'
+  | 'white_poplar'
+  | 'arbutus'
+  | 'garry_oak'
+  | 'california_redwood'
+  | 'rhododendron'
+  | 'eucalyptus';
 
 export type SiteId =
   | 'coastal_homestead'
   | 'misty_creek'
   | 'timber_ridge'
-  | 'storm_bluff';
+  | 'storm_bluff'
+  | 'coastal_town'
+  | 'pacific_headland';
 
 export type ToolId = 'prune' | 'fell' | 'wedge' | 'buck';
 
@@ -27,7 +39,19 @@ export interface SpeciesSpec {
   arboristTip: string;
   barkPrimary: string;
   barkSecondary: string;
-  barkStyle: 'furrowed' | 'fibrous' | 'scaly' | 'mossy' | 'smooth_lichen' | 'plated';
+  barkStyle:
+    | 'furrowed'
+    | 'fibrous'
+    | 'scaly'
+    | 'mossy'
+    | 'smooth_lichen'
+    | 'plated'
+    | 'smooth_bronze'
+    | 'white_diamond'
+    | 'peeling_terracotta'
+    | 'pale_checkered'
+    | 'redwood_fluted'
+    | 'peeling_eucalyptus';
   heartwoodColor: string;
   sapwoodColor: string;
   foliageColors: string[];
@@ -44,13 +68,41 @@ export interface SpeciesSpec {
   /** Drooping leader tip (characteristic of Western Hemlock) */
   droopingLeader?: boolean;
   /** Crown shape silhouette */
-  crownShape: 'spire' | 'sweeping_cone' | 'tiered_spruce' | 'broad_dome' | 'oval_upright' | 'graceful_feathery';
+  crownShape:
+    | 'spire'
+    | 'sweeping_cone'
+    | 'tiered_spruce'
+    | 'broad_dome'
+    | 'oval_upright'
+    | 'graceful_feathery'
+    | 'weeping_curtain'
+    | 'layered_garden'
+    | 'blooming_hedge'
+    | 'smoky_plume'
+    | 'silver_poplar'
+    | 'gnarled_madrone'
+    | 'spreading_oak'
+    | 'redwood_spire'
+    | 'rhody_bloom'
+    | 'eucalyptus_plume';
 }
 
 export interface HazardSpec {
   id: string;
   label: string;
-  type: 'cabin' | 'shed' | 'barn' | 'fence' | 'truck' | 'gazebo' | 'powerline' | 'sapling';
+  type:
+    | 'cabin'
+    | 'shed'
+    | 'barn'
+    | 'fence'
+    | 'truck'
+    | 'gazebo'
+    | 'powerline'
+    | 'sapling'
+    | 'house'
+    | 'greenhouse'
+    | 'picket_fence'
+    | 'car';
   x: number;
   z: number;
   radius: number;
@@ -293,6 +345,7 @@ export interface GameHUDState {
   };
   objectives: Array<{
     id: string;
+    treeId?: string;
     text: string;
     done: boolean;
     progress?: string;

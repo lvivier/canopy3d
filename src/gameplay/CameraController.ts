@@ -1,8 +1,27 @@
 import * as THREE from 'three';
 
+export interface CameraKeyframe {
+  target: THREE.Vector3;
+  distance: number;
+  polar: number;
+  azimuth: number;
+}
+
+function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return (
+    0.5 *
+    (2 * p1 +
+      (-p0 + p2) * t +
+      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+  );
+}
+
 /**
- * Smooth mouse & keyboard orbital camera controller with smart contextual focus
- * and impact camera shake.
+ * Smooth mouse & keyboard orbital camera controller with smart contextual focus,
+ * cinematic mission intro fly-ins, and impact camera shake.
  * - Right-click drag, Middle-click drag, or Arrow keys orbit around current target
  * - Scroll wheel or `-` / `=` (`+`) keys zoom smoothly
  * - Smooth lerp transitions when selecting trees or switching tools
@@ -30,6 +49,13 @@ export class CameraController {
   private shakeMagnitude = 0;
   private autoRotateSpeed = 0;
 
+  private intro: {
+    keyframes: CameraKeyframe[];
+    elapsed: number;
+    duration: number;
+    onComplete?: () => void;
+  } | null = null;
+
   private keyboardEnabled = false;
   private heldKeys = new Set<'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'ZoomIn' | 'ZoomOut'>();
 
@@ -45,6 +71,7 @@ export class CameraController {
 
     this.domElement.addEventListener('pointerdown', (e) => {
       if (e.button === 2 || e.button === 1 || (e.button === 0 && e.shiftKey)) {
+        if (this.intro) this.cancelIntro(false);
         this.isOrbiting = true;
         this.lastX = e.clientX;
         this.lastY = e.clientY;
@@ -74,6 +101,7 @@ export class CameraController {
       'wheel',
       (e) => {
         e.preventDefault();
+        if (this.intro) this.cancelIntro(false);
         const factor = 1 + Math.sign(e.deltaY) * 0.11;
         this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * factor, 6.5, 52);
       },
@@ -105,6 +133,7 @@ export class CameraController {
       if (!camKey) return;
 
       e.preventDefault();
+      if (this.intro) this.cancelIntro(false);
       if (!e.repeat && !this.heldKeys.has(camKey)) {
         // Immediate subtle nudge so quick single taps feel crisp & responsive
         if (camKey === 'ArrowLeft') this.desiredAzimuth += 0.06;
@@ -147,6 +176,78 @@ export class CameraController {
 
   public setAutoRotate(speed: number): void {
     this.autoRotateSpeed = speed;
+    if (speed !== 0 && this.intro) {
+      this.intro = null;
+    }
+  }
+
+  public isIntroPlaying(): boolean {
+    return this.intro !== null;
+  }
+
+  public playIntro(
+    keyframes: CameraKeyframe[],
+    durationSeconds: number,
+    onComplete?: () => void
+  ): void {
+    if (keyframes.length < 2 || durationSeconds <= 0) {
+      const end = keyframes[keyframes.length - 1];
+      if (end) {
+        this.focusOn(end.target, end.distance, end.polar, end.azimuth);
+        this.applyImmediate();
+      }
+      onComplete?.();
+      return;
+    }
+
+    const cloned = keyframes.map((k) => ({
+      target: k.target.clone(),
+      distance: k.distance,
+      polar: THREE.MathUtils.clamp(k.polar, 0.3, 1.46),
+      azimuth: k.azimuth,
+    }));
+
+    this.intro = {
+      keyframes: cloned,
+      elapsed: 0,
+      duration: durationSeconds,
+      onComplete,
+    };
+
+    // Place camera immediately at the opening keyframe
+    const start = cloned[0];
+    this.target.copy(start.target);
+    this.desiredTarget.copy(start.target);
+    this.distance = start.distance;
+    this.desiredDistance = THREE.MathUtils.clamp(start.distance, 6.5, 52);
+    this.polar = start.polar;
+    this.desiredPolar = start.polar;
+    this.azimuth = start.azimuth;
+    this.desiredAzimuth = start.azimuth;
+    this.updateCameraTransform();
+  }
+
+  public cancelIntro(glideToEnd: boolean): void {
+    if (!this.intro) return;
+    const { keyframes, onComplete } = this.intro;
+    this.intro = null;
+    if (glideToEnd) {
+      const end = keyframes[keyframes.length - 1];
+      this.desiredTarget.copy(end.target);
+      this.desiredDistance = THREE.MathUtils.clamp(end.distance, 6.5, 52);
+      this.desiredPolar = THREE.MathUtils.clamp(end.polar, 0.28, 1.46);
+      const diff = Math.atan2(
+        Math.sin(end.azimuth - this.azimuth),
+        Math.cos(end.azimuth - this.azimuth)
+      );
+      this.desiredAzimuth = this.azimuth + diff;
+    } else {
+      this.desiredTarget.copy(this.target);
+      this.desiredDistance = THREE.MathUtils.clamp(this.distance, 6.5, 52);
+      this.desiredPolar = THREE.MathUtils.clamp(this.polar, 0.28, 1.46);
+      this.desiredAzimuth = this.azimuth;
+    }
+    onComplete?.();
   }
 
   public focusOn(
@@ -155,6 +256,11 @@ export class CameraController {
     polar?: number,
     azimuth?: number
   ): void {
+    if (this.intro) {
+      const cb = this.intro.onComplete;
+      this.intro = null;
+      cb?.();
+    }
     this.desiredTarget.copy(point);
     if (distance !== undefined) this.desiredDistance = THREE.MathUtils.clamp(distance, 6.5, 52);
     if (polar !== undefined) this.desiredPolar = THREE.MathUtils.clamp(polar, 0.28, 1.46);
@@ -169,6 +275,7 @@ export class CameraController {
   }
 
   public orbitStep(deltaAzimuth: number): void {
+    if (this.intro) this.cancelIntro(false);
     this.desiredAzimuth += deltaAzimuth;
   }
 
@@ -193,6 +300,66 @@ export class CameraController {
   }
 
   public update(dt: number): void {
+    if (this.intro) {
+      this.intro.elapsed += dt;
+      const u = THREE.MathUtils.clamp(this.intro.elapsed / this.intro.duration, 0, 1);
+      // Immediate gentle glide-in with a soft, cinematic ease-out landing
+      const smooth = u * u * (3 - 2 * u);
+      const easeOut = 1 - Math.pow(1 - u, 2.2);
+      const t = smooth * 0.65 + easeOut * 0.35;
+
+      const ks = this.intro.keyframes;
+      const segCount = ks.length - 1;
+      const scaled = t * segCount;
+      const idx = Math.min(segCount - 1, Math.floor(scaled));
+      const localT = scaled - idx;
+
+      const k0 = ks[Math.max(0, idx - 1)];
+      const k1 = ks[idx];
+      const k2 = ks[Math.min(segCount, idx + 1)];
+      const k3 = ks[Math.min(segCount, idx + 2)];
+
+      this.target.set(
+        catmullRom(k0.target.x, k1.target.x, k2.target.x, k3.target.x, localT),
+        catmullRom(k0.target.y, k1.target.y, k2.target.y, k3.target.y, localT),
+        catmullRom(k0.target.z, k1.target.z, k2.target.z, k3.target.z, localT)
+      );
+      this.distance = THREE.MathUtils.clamp(
+        catmullRom(k0.distance, k1.distance, k2.distance, k3.distance, localT),
+        6.5,
+        62
+      );
+      this.polar = THREE.MathUtils.clamp(
+        catmullRom(k0.polar, k1.polar, k2.polar, k3.polar, localT),
+        0.3,
+        1.46
+      );
+      this.azimuth = catmullRom(k0.azimuth, k1.azimuth, k2.azimuth, k3.azimuth, localT);
+
+      this.desiredTarget.copy(this.target);
+      this.desiredDistance = THREE.MathUtils.clamp(this.distance, 6.5, 52);
+      this.desiredPolar = this.polar;
+      this.desiredAzimuth = this.azimuth;
+
+      if (u >= 1) {
+        const end = ks[ks.length - 1];
+        const cb = this.intro.onComplete;
+        this.intro = null;
+        this.target.copy(end.target);
+        this.desiredTarget.copy(end.target);
+        this.distance = THREE.MathUtils.clamp(end.distance, 6.5, 52);
+        this.desiredDistance = this.distance;
+        this.polar = THREE.MathUtils.clamp(end.polar, 0.28, 1.46);
+        this.desiredPolar = this.polar;
+        this.azimuth = end.azimuth;
+        this.desiredAzimuth = end.azimuth;
+        cb?.();
+      }
+
+      this.updateCameraTransform();
+      return;
+    }
+
     if (this.keyboardEnabled && this.heldKeys.size > 0) {
       const orbitSpeed = 1.65; // rad/sec
       const pitchSpeed = 1.15; // rad/sec

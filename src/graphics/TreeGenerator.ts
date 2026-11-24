@@ -109,6 +109,10 @@ function createFoliageCluster(
         // Western Hemlock: soft elongated feathery plumes
         geo = new THREE.DodecahedronGeometry(scale * (0.46 + rand() * 0.24), 1);
         geo.scale(1.3, 0.44, 1.38);
+      } else if (spec.crownShape === 'redwood_spire') {
+        // California Redwood: wide flat feathery fog-belt needle sprays
+        geo = new THREE.DodecahedronGeometry(scale * (0.52 + rand() * 0.24), 1);
+        geo.scale(1.42, 0.36, 1.32);
       } else {
         // Douglas Fir: lush layered evergreen bough pads
         geo = new THREE.DodecahedronGeometry(scale * (0.5 + rand() * 0.26), 1);
@@ -137,9 +141,281 @@ function createFoliageCluster(
       mesh.receiveShadow = true;
       group.add(mesh);
     }
+  } else if (spec.crownShape === 'weeping_curtain') {
+    // Weeping Willow: soft airy crown tuft + long cascading chartreuse leaf drapes hanging downward!
+    const topGeo = new THREE.IcosahedronGeometry(scale * 0.48, 1);
+    topGeo.scale(1.15, 0.45, 1.15);
+    const topMesh = new THREE.Mesh(
+      topGeo,
+      new THREE.MeshStandardMaterial({ color: pickColor(), roughness: 0.78, flatShading: true })
+    );
+    topMesh.position.y = scale * 0.1;
+    topMesh.castShadow = true;
+    topMesh.receiveShadow = true;
+    group.add(topMesh);
+
+    const curtainCount = isDeadwood ? 3 : 6 + Math.floor(rand() * 3);
+    for (let i = 0; i < curtainCount; i++) {
+      const a = (i / curtainCount) * Math.PI * 2 + rand() * 0.5;
+      const rad = scale * (0.24 + rand() * 0.38);
+      const len = scale * (1.15 + rand() * 0.85);
+      const frondGeo = new THREE.ConeGeometry(scale * (0.12 + rand() * 0.06), len, 5);
+      // Point tip downward like hanging willow streamers
+      frondGeo.rotateX(Math.PI);
+      frondGeo.translate(0, -len * 0.5, 0);
+      const mesh = new THREE.Mesh(
+        frondGeo,
+        new THREE.MeshStandardMaterial({ color: pickColor(), roughness: 0.8, flatShading: true })
+      );
+      mesh.position.set(Math.cos(a) * rad, scale * 0.05, Math.sin(a) * rad);
+      mesh.rotation.set((rand() - 0.5) * 0.16, rand() * Math.PI, (rand() - 0.5) * 0.16);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+  } else if (spec.crownShape === 'layered_garden') {
+    // Japanese Maple ('Bloodgood'): sculptural horizontal flattened crimson cloud tiers!
+    const tierCount = isDeadwood ? 2 : 4 + Math.floor(rand() * 2);
+    for (let i = 0; i < tierCount; i++) {
+      const r = scale * (0.58 + rand() * 0.34);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.48, 0.34, 1.32);
+      const mat = new THREE.MeshStandardMaterial({
+        color: pickColor(),
+        roughness: 0.74,
+        metalness: 0.03,
+        flatShading: true,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(
+        (rand() - 0.5) * scale * 0.95,
+        (i - tierCount * 0.4) * scale * 0.24,
+        (rand() - 0.5) * scale * 0.95
+      );
+      mesh.rotation.y = rand() * Math.PI * 2;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+  } else if (spec.crownShape === 'blooming_hedge') {
+    // Common Lilac: lush heart-green leaf dome studded with fragrant lavender-violet flower panicles!
+    const leafColors = isDeadwood ? deadColors : spec.foliageColors.slice(0, 3);
+    const bloomColors = isDeadwood ? deadColors : spec.foliageColors.slice(3);
+    const leafCount = isDeadwood ? 2 : 3 + Math.floor(rand() * 2);
+    for (let i = 0; i < leafCount; i++) {
+      const r = scale * (0.56 + rand() * 0.28);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.12, 0.85, 1.12);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: leafColors[Math.floor(rand() * leafColors.length)],
+          roughness: 0.8,
+          flatShading: true,
+        })
+      );
+      mesh.position.set((rand() - 0.5) * scale * 0.75, (rand() - 0.4) * scale * 0.4, (rand() - 0.5) * scale * 0.75);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    if (!isDeadwood) {
+      const panicleCount = 4 + Math.floor(rand() * 3);
+      for (let p = 0; p < panicleCount; p++) {
+        const a = (p / panicleCount) * Math.PI * 2 + rand() * 0.5;
+        const dist = scale * (0.35 + rand() * 0.45);
+        const plumeGeo = new THREE.ConeGeometry(scale * 0.22, scale * 0.62, 6);
+        const plume = new THREE.Mesh(
+          plumeGeo,
+          new THREE.MeshStandardMaterial({
+            color: bloomColors[Math.floor(rand() * bloomColors.length)],
+            roughness: 0.72,
+            flatShading: true,
+          })
+        );
+        plume.position.set(Math.cos(a) * dist, scale * (0.28 + rand() * 0.25), Math.sin(a) * dist);
+        plume.rotation.set((rand() - 0.5) * 0.45, rand() * Math.PI, (rand() - 0.5) * 0.45);
+        plume.castShadow = true;
+        group.add(plume);
+      }
+    }
+  } else if (spec.crownShape === 'smoky_plume') {
+    // Eurasian Smoke Tree ('Royal Purple'): deep burgundy leaf core + airy purple-rose smoke haze!
+    const coreColors = isDeadwood ? deadColors : spec.foliageColors.slice(0, 2);
+    const smokeColors = isDeadwood ? deadColors : spec.foliageColors.slice(2);
+    const coreCount = isDeadwood ? 2 : 3;
+    for (let i = 0; i < coreCount; i++) {
+      const r = scale * (0.52 + rand() * 0.24);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: coreColors[Math.floor(rand() * coreColors.length)],
+          roughness: 0.82,
+          flatShading: true,
+        })
+      );
+      mesh.position.set((rand() - 0.5) * scale * 0.65, (rand() - 0.4) * scale * 0.35, (rand() - 0.5) * scale * 0.65);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    if (!isDeadwood) {
+      const puffCount = 5 + Math.floor(rand() * 3);
+      for (let i = 0; i < puffCount; i++) {
+        const a = (i / puffCount) * Math.PI * 2 + rand() * 0.4;
+        const dist = scale * (0.45 + rand() * 0.48);
+        const r = scale * (0.42 + rand() * 0.28);
+        const puffGeo = new THREE.IcosahedronGeometry(r, 1);
+        const puff = new THREE.Mesh(
+          puffGeo,
+          new THREE.MeshStandardMaterial({
+            color: smokeColors[Math.floor(rand() * smokeColors.length)],
+            roughness: 0.92,
+            transparent: true,
+            opacity: 0.64,
+            flatShading: true,
+          })
+        );
+        puff.position.set(Math.cos(a) * dist, scale * (0.18 + rand() * 0.42), Math.sin(a) * dist);
+        group.add(puff);
+      }
+    }
+  } else if (spec.crownShape === 'rhody_bloom') {
+    // Pacific Rhododendron: glossy dark evergreen leaf dome studded with vivid rose-magenta flower trusses!
+    const leafColors = isDeadwood ? deadColors : spec.foliageColors.slice(0, 3);
+    const bloomColors = isDeadwood ? deadColors : spec.foliageColors.slice(3);
+    const leafCount = isDeadwood ? 2 : 4;
+    for (let i = 0; i < leafCount; i++) {
+      const r = scale * (0.56 + rand() * 0.26);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.18, 0.78, 1.15);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: leafColors[Math.floor(rand() * leafColors.length)],
+          roughness: 0.62,
+          metalness: 0.05,
+          flatShading: true,
+        })
+      );
+      mesh.position.set(
+        (rand() - 0.5) * scale * 0.75,
+        (rand() - 0.4) * scale * 0.38,
+        (rand() - 0.5) * scale * 0.75
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    if (!isDeadwood) {
+      const trussCount = 4 + Math.floor(rand() * 3);
+      for (let p = 0; p < trussCount; p++) {
+        const a = (p / trussCount) * Math.PI * 2 + rand() * 0.45;
+        const dist = scale * (0.32 + rand() * 0.42);
+        const truss = new THREE.Mesh(
+          new THREE.IcosahedronGeometry(scale * (0.24 + rand() * 0.1), 1),
+          new THREE.MeshStandardMaterial({
+            color: bloomColors[Math.floor(rand() * bloomColors.length)],
+            roughness: 0.68,
+            flatShading: true,
+          })
+        );
+        truss.position.set(Math.cos(a) * dist, scale * (0.22 + rand() * 0.28), Math.sin(a) * dist);
+        truss.castShadow = true;
+        group.add(truss);
+      }
+    }
+  } else if (spec.crownShape === 'gnarled_madrone') {
+    // Pacific Arbutus: glossy oval evergreen foliage pads with subtle coral-orange coastal berry clusters!
+    const leafColors = isDeadwood ? deadColors : spec.foliageColors.slice(0, 4);
+    const berryColor = spec.foliageColors[4] ?? '#d96e46';
+    const padCount = isDeadwood ? 2 : 4 + Math.floor(rand() * 2);
+    for (let i = 0; i < padCount; i++) {
+      const r = scale * (0.56 + rand() * 0.3);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.26, 0.68, 1.18);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: leafColors[Math.floor(rand() * leafColors.length)],
+          roughness: 0.58,
+          metalness: 0.06,
+          flatShading: true,
+        })
+      );
+      mesh.position.set(
+        (rand() - 0.5) * scale * 0.9,
+        (rand() - 0.35) * scale * 0.45,
+        (rand() - 0.5) * scale * 0.9
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    if (!isDeadwood && rand() > 0.35) {
+      for (let b = 0; b < 2; b++) {
+        const berry = new THREE.Mesh(
+          new THREE.IcosahedronGeometry(scale * 0.15, 0),
+          new THREE.MeshStandardMaterial({ color: berryColor, roughness: 0.55, flatShading: true })
+        );
+        berry.position.set(
+          (rand() - 0.5) * scale * 0.75,
+          scale * (0.15 + rand() * 0.25),
+          (rand() - 0.5) * scale * 0.75
+        );
+        group.add(berry);
+      }
+    }
+  } else if (spec.crownShape === 'eucalyptus_plume') {
+    // Blue Gum Eucalyptus: airy silver-blue foliage tufts with pendulous hanging sickle-leaf drapes!
+    const tuftCount = isDeadwood ? 2 : 3 + Math.floor(rand() * 2);
+    for (let i = 0; i < tuftCount; i++) {
+      const r = scale * (0.48 + rand() * 0.25);
+      const geo = new THREE.IcosahedronGeometry(r, 1);
+      geo.scale(1.12, 0.72, 1.12);
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: pickColor(),
+          roughness: 0.72,
+          metalness: 0.04,
+          flatShading: true,
+        })
+      );
+      mesh.position.set(
+        (rand() - 0.5) * scale * 0.8,
+        (rand() - 0.2) * scale * 0.35,
+        (rand() - 0.5) * scale * 0.8
+      );
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
+    }
+    const drapeCount = isDeadwood ? 2 : 5 + Math.floor(rand() * 2);
+    for (let i = 0; i < drapeCount; i++) {
+      const a = (i / drapeCount) * Math.PI * 2 + rand() * 0.5;
+      const rad = scale * (0.28 + rand() * 0.36);
+      const len = scale * (0.85 + rand() * 0.65);
+      const drapeGeo = new THREE.ConeGeometry(scale * (0.15 + rand() * 0.07), len, 5);
+      drapeGeo.rotateX(Math.PI);
+      drapeGeo.translate(0, -len * 0.5, 0);
+      const drape = new THREE.Mesh(
+        drapeGeo,
+        new THREE.MeshStandardMaterial({
+          color: pickColor(),
+          roughness: 0.74,
+          flatShading: true,
+        })
+      );
+      drape.position.set(Math.cos(a) * rad, scale * 0.05, Math.sin(a) * rad);
+      drape.rotation.set((rand() - 0.5) * 0.22, rand() * Math.PI, (rand() - 0.5) * 0.22);
+      drape.castShadow = true;
+      group.add(drape);
+    }
   } else {
-    // Deciduous: Bigleaf Maple / Red Alder lush sunlit leaf canopies
-    const puffCount = isDeadwood ? 2 : 4 + Math.floor(rand() * 3);
+    // Deciduous: Bigleaf Maple / Red Alder / White Poplar (shimmering silver-backed) lush sunlit leaf canopies
+    const puffCount = isDeadwood ? 2 : spec.crownShape === 'silver_poplar' ? 5 + Math.floor(rand() * 3) : 4 + Math.floor(rand() * 3);
     for (let i = 0; i < puffCount; i++) {
       const r = scale * (0.62 + rand() * 0.36);
       const geo = new THREE.IcosahedronGeometry(r, 1);
@@ -156,8 +432,8 @@ function createFoliageCluster(
 
       const mat = new THREE.MeshStandardMaterial({
         color: pickColor(),
-        roughness: 0.78,
-        metalness: 0.03,
+        roughness: spec.crownShape === 'silver_poplar' ? 0.68 : 0.78,
+        metalness: spec.crownShape === 'silver_poplar' ? 0.06 : 0.03,
         flatShading: true,
       });
       const mesh = new THREE.Mesh(geo, mat);
@@ -183,8 +459,11 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   const rootGroup = new THREE.Group();
   rootGroup.position.set(spec.x, 0, spec.z);
 
-  const baseRadius = Math.max(0.28, spec.height * speciesSpec.radiusRatio);
-  const cutHeight = Math.min(1.15, Math.max(0.85, spec.height * 0.055));
+  const baseRadius = Math.max(0.22, spec.height * speciesSpec.radiusRatio);
+  const cutHeight =
+    spec.height < 11
+      ? Math.max(0.58, spec.height * 0.075)
+      : Math.min(1.15, Math.max(0.85, spec.height * 0.055));
 
   const barkMat = new THREE.MeshStandardMaterial({
     map: barkSet.map,
@@ -462,11 +741,21 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   const branches: BranchData[] = [];
 
   const totalInteractiveBranches =
-    spec.species === 'bigleaf_maple'
+    spec.species === 'bigleaf_maple' ||
+    spec.species === 'weeping_willow' ||
+    spec.species === 'garry_oak' ||
+    spec.species === 'arbutus'
       ? Math.max(10, spec.hazardBranches + 5)
-      : spec.species === 'red_alder'
-        ? Math.max(9, spec.hazardBranches + 4)
-        : Math.max(11, spec.hazardBranches + 5);
+      : spec.species === 'japanese_maple' ||
+          spec.species === 'lilac' ||
+          spec.species === 'smoke_tree' ||
+          spec.species === 'rhododendron'
+        ? Math.max(8, spec.hazardBranches + 4)
+        : spec.species === 'red_alder' ||
+            spec.species === 'white_poplar' ||
+            spec.species === 'eucalyptus'
+          ? Math.max(9, spec.hazardBranches + 4)
+          : Math.max(11, spec.hazardBranches + 5);
 
   // Decide which branch indices are target hazard/deadwood/unbalanced branches
   const targetIndices = new Set<number>();
@@ -489,7 +778,8 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
         ? 0.28 + (i / totalInteractiveBranches) * 0.44 + (rand() - 0.5) * 0.04
         : 0.18 + (i / totalInteractiveBranches) * 0.46 + (rand() - 0.5) * 0.035;
 
-    const rawAttachY = Math.max(2.0, upperHeight * Math.min(0.76, heightFrac));
+    const minAttachY = spec.height < 11 ? 1.2 : 2.0;
+    const rawAttachY = Math.max(minAttachY, upperHeight * Math.min(0.76, heightFrac));
     // Keep required hazard limbs on the remaining lower spar so top-down piecing never deadlocks pruning
     const attachY =
       isTarget && minStandingLocalY < Infinity
@@ -512,13 +802,29 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
 
     // Branch length & pitch per species
     const sizeFactor = 1.0 - (heightFrac - 0.18) * 0.62;
+    const widthSpread =
+      spec.species === 'garry_oak'
+        ? 4.9
+        : spec.species === 'weeping_willow'
+          ? 4.4
+          : spec.species === 'arbutus'
+            ? 4.3
+            : spec.species === 'japanese_maple' || spec.species === 'smoke_tree'
+              ? 4.5
+              : spec.species === 'lilac' || spec.species === 'rhododendron'
+                ? 3.7
+                : spec.species === 'eucalyptus'
+                  ? 3.9
+                  : speciesSpec.category === 'deciduous'
+                    ? 3.8
+                    : 3.2;
     const bLength =
-      (speciesSpec.category === 'deciduous' ? 3.8 : 3.2) *
+      widthSpread *
       Math.max(0.55, sizeFactor) *
-      (spec.height / 18) *
+      Math.max(0.52, spec.height / 18) *
       (isTarget ? 1.18 : 0.92 + rand() * 0.25);
 
-    const bRadius = Math.max(0.08, localTrunkR * (isTarget ? 0.42 : 0.34));
+    const bRadius = Math.max(0.065, localTrunkR * (isTarget ? 0.42 : 0.34));
 
     const branchGroup = new THREE.Group();
     const attachLocalPos = new THREE.Vector3(
@@ -538,6 +844,16 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     else if (spec.species === 'sitka_spruce') pitch = -0.05;
     else if (spec.species === 'bigleaf_maple') pitch = 0.32 + rand() * 0.22;
     else if (spec.species === 'red_alder') pitch = 0.42 + rand() * 0.18;
+    else if (spec.species === 'weeping_willow') pitch = 0.18 + rand() * 0.18;
+    else if (spec.species === 'japanese_maple') pitch = 0.14 + rand() * 0.14;
+    else if (spec.species === 'lilac') pitch = 0.46 + rand() * 0.2;
+    else if (spec.species === 'smoke_tree') pitch = 0.34 + rand() * 0.2;
+    else if (spec.species === 'white_poplar') pitch = 0.44 + rand() * 0.22;
+    else if (spec.species === 'garry_oak') pitch = 0.2 + rand() * 0.18;
+    else if (spec.species === 'arbutus') pitch = 0.28 + rand() * 0.24;
+    else if (spec.species === 'rhododendron') pitch = 0.36 + rand() * 0.22;
+    else if (spec.species === 'eucalyptus') pitch = 0.38 + rand() * 0.22;
+    else if (spec.species === 'california_redwood') pitch = -0.1;
     else pitch = -0.06 + (heightFrac - 0.2) * 0.25;
 
     if (isTarget && spec.task === 'prune_only') {
@@ -568,13 +884,17 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     const tip1X = Math.cos(pitch) * seg1Len;
     const tip1Y = Math.sin(pitch) * seg1Len;
 
-    // Secondary limb bend (J-curve swoop upward for Cedar, outward fork for Maple, gentle droop for Hemlock)
+    // Secondary limb bend (J-curve swoop upward for Cedar, cascading droop for Weeping Willow, tiered for Japanese Maple)
     const seg2Pitch =
       spec.species === 'western_red_cedar'
         ? pitch + 0.34
-        : spec.species === 'bigleaf_maple'
-          ? pitch - 0.12
-          : pitch - 0.08;
+        : spec.species === 'weeping_willow'
+          ? pitch - 0.55
+          : spec.species === 'japanese_maple'
+            ? pitch - 0.1
+            : spec.species === 'bigleaf_maple'
+              ? pitch - 0.12
+              : pitch - 0.08;
 
     const seg2Geo = new THREE.CylinderGeometry(bRadius * 0.26, bRadius * 0.64, seg2Len, 6);
     seg2Geo.rotateZ(-Math.PI / 2);
@@ -729,7 +1049,8 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
       const f = startFrac + (tIdx / tiers) * (0.98 - startFrac);
       const y = upperHeight * f;
       const center = getTrunkCenterAt(y);
-      const crownRadius = (1 - (f - 0.15) / 0.88) * (spec.height * 0.24) + 0.55;
+      const crownWidth = spec.species === 'california_redwood' ? 0.205 : 0.24;
+      const crownRadius = (1 - (f - 0.15) / 0.88) * (spec.height * crownWidth) + 0.55;
       const boughsInTier = f > 0.88 ? 3 : 5;
 
       if (y <= groundLimbCutoffY) {
@@ -833,18 +1154,77 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     );
     upperCrownGroup.add(spire);
   } else {
-    // Deciduous upper dome (Bigleaf Maple / Red Alder)
-    const domeCenter = getTrunkCenterAt(upperHeight * 0.86);
-    const clusterCount = spec.species === 'bigleaf_maple' ? 14 : 10;
-    const domeRadius = spec.species === 'bigleaf_maple' ? spec.height * 0.27 : spec.height * 0.19;
+    // Deciduous upper dome (tuned for wild hardwoods + ornamental garden trees + coastal broadleafs)
+    const domeCenter = getTrunkCenterAt(
+      upperHeight *
+        (spec.species === 'japanese_maple' ||
+        spec.species === 'smoke_tree' ||
+        spec.species === 'garry_oak'
+          ? 0.78
+          : spec.species === 'eucalyptus'
+            ? 0.88
+            : 0.86)
+    );
+    const clusterCount =
+      spec.species === 'bigleaf_maple' ||
+      spec.species === 'weeping_willow' ||
+      spec.species === 'garry_oak'
+        ? 14
+        : spec.species === 'white_poplar' ||
+            spec.species === 'arbutus' ||
+            spec.species === 'eucalyptus'
+          ? 13
+          : 11;
+    const domeRadius =
+      spec.species === 'garry_oak'
+        ? spec.height * 0.35
+        : spec.species === 'weeping_willow' || spec.species === 'arbutus'
+          ? spec.height * 0.3
+          : spec.species === 'japanese_maple' ||
+              spec.species === 'smoke_tree' ||
+              spec.species === 'rhododendron'
+            ? spec.height * 0.33
+            : spec.species === 'lilac'
+              ? spec.height * 0.29
+              : spec.species === 'bigleaf_maple'
+                ? spec.height * 0.27
+                : spec.species === 'eucalyptus'
+                  ? spec.height * 0.24
+                  : spec.species === 'white_poplar'
+                    ? spec.height * 0.22
+                    : spec.height * 0.19;
+    const folScale =
+      spec.species === 'bigleaf_maple' || spec.species === 'garry_oak'
+        ? 2.1
+        : spec.species === 'weeping_willow' ||
+            spec.species === 'arbutus' ||
+            spec.species === 'eucalyptus'
+          ? 1.65
+          : spec.species === 'white_poplar'
+            ? 1.38
+            : spec.species === 'japanese_maple' ||
+                spec.species === 'lilac' ||
+                spec.species === 'smoke_tree' ||
+                spec.species === 'rhododendron'
+              ? Math.max(1.05, spec.height * 0.165)
+              : 1.55;
     for (let c = 0; c < clusterCount; c++) {
-      const phi = Math.acos(1 - (c + 0.5) / clusterCount) * 0.72;
+      const phi = Math.acos(1 - (c + 0.5) / clusterCount) * 0.74;
       const theta = c * 2.39996 + rand() * 0.4;
       const r = domeRadius * (0.62 + rand() * 0.42);
       const px = domeCenter.x + Math.sin(phi) * Math.cos(theta) * r;
-      const py = domeCenter.y + Math.cos(phi) * r * 0.72;
+      const py =
+        domeCenter.y +
+        Math.cos(phi) *
+          r *
+          (spec.species === 'japanese_maple'
+            ? 0.48
+            : spec.species === 'garry_oak'
+              ? 0.56
+              : spec.species === 'white_poplar' || spec.species === 'eucalyptus'
+                ? 0.94
+                : 0.72);
       const pz = domeCenter.z + Math.sin(phi) * Math.sin(theta) * r;
-      const folScale = spec.species === 'bigleaf_maple' ? 2.15 : 1.55;
       const cluster = createFoliageCluster(speciesSpec, folScale, rand, false);
 
       if (py <= groundLimbCutoffY + 1.0) {
@@ -888,8 +1268,13 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
           pruned: false,
         });
       } else {
-        cluster.position.set(px, py, pz);
-        upperCrownGroup.add(cluster);
+        const upperSeg = findSegmentForY(Math.min(py, upperHeight));
+        cluster.position.set(
+          px - upperSeg.group.position.x,
+          py - upperSeg.group.position.y,
+          pz - upperSeg.group.position.z
+        );
+        upperSeg.group.add(cluster);
       }
     }
   }
