@@ -104,7 +104,16 @@ export function getTerrainHeight(x: number, z: number, site: SiteId): number {
 function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE.Vector3; fogColor: number; fogDensity: number } {
   const palettes: Record<
     WeatherId,
-    { top: string; mid: string; horizon: string; sun: string; sunPos: [number, number, number]; fog: number; density: number }
+    {
+      top: string;
+      mid: string;
+      horizon: string;
+      sun: string;
+      sunPos: [number, number, number];
+      sunGlow: number;
+      fog: number;
+      density: number;
+    }
   > = {
     sunny_morning: {
       top: '#3b7bb8',
@@ -112,6 +121,7 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       horizon: '#d8e9df',
       sun: '#fff4cf',
       sunPos: [45, 38, -32],
+      sunGlow: 1.0,
       fog: 0xcde0d8,
       density: 0.0072,
     },
@@ -121,8 +131,19 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       horizon: '#c7d5d2',
       sun: '#f0f4e8',
       sunPos: [30, 34, -40],
+      sunGlow: 0.55,
       fog: 0xbfcfcc,
       density: 0.0125,
+    },
+    light_rain: {
+      top: '#3d4f59',
+      mid: '#637880',
+      horizon: '#94a8a9',
+      sun: '#c2d3d8',
+      sunPos: [18, 42, -36],
+      sunGlow: 0.22,
+      fog: 0x899ea1,
+      density: 0.0118,
     },
     golden_hour: {
       top: '#2e4e72',
@@ -130,6 +151,7 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       horizon: '#ebc192',
       sun: '#ffd584',
       sunPos: [-52, 22, -38],
+      sunGlow: 1.05,
       fog: 0xd9bfa0,
       density: 0.0085,
     },
@@ -139,6 +161,7 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       horizon: '#9eb1b5',
       sun: '#d8e3e6',
       sunPos: [-35, 28, -45],
+      sunGlow: 0.45,
       fog: 0x93a7ac,
       density: 0.011,
     },
@@ -156,6 +179,7 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       uHorizon: { value: new THREE.Color(p.horizon) },
       uSunColor: { value: new THREE.Color(p.sun) },
       uSunDir: { value: sunDir },
+      uSunGlow: { value: p.sunGlow },
     },
     vertexShader: `
       varying vec3 vWorldPos;
@@ -171,6 +195,7 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
       uniform vec3 uHorizon;
       uniform vec3 uSunColor;
       uniform vec3 uSunDir;
+      uniform float uSunGlow;
       varying vec3 vWorldPos;
       void main() {
         vec3 dir = normalize(vWorldPos);
@@ -178,7 +203,7 @@ function createSkyDome(weather: WeatherId): { skyMesh: THREE.Mesh; sunDir: THREE
         vec3 col = mix(uHorizon, uMid, smoothstep(0.0, 0.28, h));
         col = mix(col, uTop, smoothstep(0.25, 0.85, h));
         float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
-        float sunHalo = pow(sunDot, 12.0) * 0.35 + pow(sunDot, 180.0) * 0.9;
+        float sunHalo = (pow(sunDot, 12.0) * 0.35 + pow(sunDot, 180.0) * 0.9) * uSunGlow;
         col += uSunColor * sunHalo;
         gl_FragColor = vec4(col, 1.0);
       }
@@ -996,6 +1021,7 @@ export function buildEnvironment(
   const hemiColors: Record<WeatherId, [number, number, number]> = {
     sunny_morning: [0xd4ecff, 0x4f6e3f, 1.25],
     misty_fog: [0xdbe7ea, 0x4b6346, 1.3],
+    light_rain: [0xb8ccd2, 0x3b523e, 1.18],
     golden_hour: [0xffe3bd, 0x5c633b, 1.18],
     coastal_gale: [0xb4cad6, 0x3e543f, 1.2],
   };
@@ -1006,6 +1032,7 @@ export function buildEnvironment(
   const sunColors: Record<WeatherId, [number, number]> = {
     sunny_morning: [0xfff6dc, 2.35],
     misty_fog: [0xf4f7f0, 1.65],
+    light_rain: [0xd3e2e8, 1.28],
     golden_hour: [0xffc67d, 2.55],
     coastal_gale: [0xe3eef2, 1.65],
   };
@@ -1026,7 +1053,10 @@ export function buildEnvironment(
   group.add(sunLight);
 
   // Soft opposite rim/fill light so shaded bark & evergreen needles stay rich and readable
-  const fillLight = new THREE.DirectionalLight(0xaad0e6, 0.52);
+  const fillLight = new THREE.DirectionalLight(
+    contract.weather === 'light_rain' ? 0x99b8c6 : 0xaad0e6,
+    contract.weather === 'light_rain' ? 0.64 : 0.52
+  );
   fillLight.position.copy(sunDir).multiplyScalar(-45);
   fillLight.position.y = 26;
   group.add(fillLight);
@@ -1059,8 +1089,8 @@ export function buildEnvironment(
 
   const terrainMat = new THREE.MeshStandardMaterial({
     map: textureCache.getTerrainTexture(terrainStyle),
-    roughness: 0.94,
-    metalness: 0.02,
+    roughness: contract.weather === 'light_rain' ? 0.72 : 0.94,
+    metalness: contract.weather === 'light_rain' ? 0.06 : 0.02,
   });
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
   terrainMesh.receiveShadow = true;

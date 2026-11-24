@@ -1,15 +1,136 @@
+import { SiteId, SpeciesSpec, WeatherId } from '../types';
+
+interface SiteAcousticProfile {
+  /** Stereo reverb tail length in seconds */
+  reverbDecay: number;
+  /** Early slap/reflection pre-delay in seconds */
+  preDelay: number;
+  /** Warmth low-pass cutoff on wet reverb tail (Hz) */
+  reverbLowpass: number;
+  /** Wet reverb return level */
+  reverbWet: number;
+  /** Subtle babbling creek murmur level (Misty Valley Creek) */
+  creekGain: number;
+  /** Distant rolling ocean surf level (Headland / Storm Bluff) */
+  surfGain: number;
+  /** Early-reflection density (higher = thick forest canopy, lower = crisp rock slap) */
+  canopyDensity: number;
+}
+
+const SITE_ACOUSTICS: Record<SiteId, SiteAcousticProfile> = {
+  coastal_homestead: {
+    // Deep coastal woods: lush, warm timber canopy reverb
+    reverbDecay: 1.4,
+    preDelay: 0.018,
+    reverbLowpass: 2350,
+    reverbWet: 0.34,
+    creekGain: 0,
+    surfGain: 0,
+    canopyDensity: 0.85,
+  },
+  timber_ridge: {
+    // Towering old-growth ridge: expansive cathedral-like woodland tail
+    reverbDecay: 1.75,
+    preDelay: 0.024,
+    reverbLowpass: 2650,
+    reverbWet: 0.38,
+    creekGain: 0,
+    surfGain: 0,
+    canopyDensity: 0.78,
+  },
+  misty_creek: {
+    // Damp mossy river hollow: rich wet woodland reverb + babbling stream
+    reverbDecay: 1.5,
+    preDelay: 0.02,
+    reverbLowpass: 2150,
+    reverbWet: 0.36,
+    creekGain: 0.068,
+    surfGain: 0,
+    canopyDensity: 0.9,
+  },
+  kootenay_rockies: {
+    // Crisp interior mountain valley: distinct alpine ridge echo & brighter stone reflection
+    reverbDecay: 1.9,
+    preDelay: 0.04,
+    reverbLowpass: 3650,
+    reverbWet: 0.3,
+    creekGain: 0,
+    surfGain: 0,
+    canopyDensity: 0.42,
+  },
+  pacific_headland: {
+    // Open coastal savanna bluff: airy dry acoustics + distant Pacific swell
+    reverbDecay: 0.75,
+    preDelay: 0.012,
+    reverbLowpass: 3200,
+    reverbWet: 0.14,
+    creekGain: 0,
+    surfGain: 0.072,
+    canopyDensity: 0.35,
+  },
+  storm_bluff: {
+    // Exposed sea cliff: brisk open bluff reflection + rolling ocean surf
+    reverbDecay: 0.82,
+    preDelay: 0.014,
+    reverbLowpass: 3000,
+    reverbWet: 0.16,
+    creekGain: 0,
+    surfGain: 0.09,
+    canopyDensity: 0.32,
+  },
+  coastal_town: {
+    // Residential neighborhood yard: tight, intimate short clap off siding & fences
+    reverbDecay: 0.46,
+    preDelay: 0.009,
+    reverbLowpass: 3350,
+    reverbWet: 0.15,
+    creekGain: 0,
+    surfGain: 0,
+    canopyDensity: 0.55,
+  },
+};
+
 /**
  * Procedural Web Audio Engine for Canopy 3D.
- * Synthesizes forest wind ambience, distant birds, pleasant electric pruning/bucking
- * saws, a realistic two-stroke chainsaw (lopey carbureted idle, throttle blip,
- * brawny wood-loaded roar, bar/chain rasp, and coast-down), wedge hammer hits,
- * wood creaking/snapping, timber impact thud, and pleasant UI/success chimes.
+ * Synthesizes forest wind ambience, light rain & canopy drips, site-specific
+ * acoustic reverb (deep-woods canopy, alpine valley echo, coastal bluff surf,
+ * valley creek murmur), distant birds, electric pruning saw, a realistic two-stroke
+ * chainsaw (lopey carbureted idle, throttle blip, brawny wood-loaded roar,
+ * bar/chain rasp, and coast-down), wedge hammer hits, species-tuned hinge
+ * snapping/splitting/creaking, live falling foliage air-rush, timber impact crash,
+ * and pleasant UI/success chimes.
  */
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private worldBus: GainNode | null = null;
   private windGain: GainNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
+
+  // Environment acoustic space (convolution reverb + weather/site ambience)
+  private envPreDelay: DelayNode | null = null;
+  private envReverbTone: BiquadFilterNode | null = null;
+  private envConvolver: ConvolverNode | null = null;
+  private envReverbWet: GainNode | null = null;
+  private irCache = new Map<SiteId, AudioBuffer>();
+
+  // Light rain dual-band synth (leafy canopy patter + soft ground drizzle)
+  private rainCanopyGain: GainNode | null = null;
+  private rainCanopyFilter: BiquadFilterNode | null = null;
+  private rainBedGain: GainNode | null = null;
+  private rainBedFilter: BiquadFilterNode | null = null;
+
+  // Site water beds (babbling creek & distant ocean surf)
+  private creekGain: GainNode | null = null;
+  private creekFilter: BiquadFilterNode | null = null;
+  private surfGain: GainNode | null = null;
+  private surfFilter: BiquadFilterNode | null = null;
+
+  private currentSite: SiteId = 'coastal_homestead';
+  private currentWeather: WeatherId = 'sunny_morning';
+  private currentWindSpeed = 0.18;
+  private ambienceClock = 0;
+  private nextRainDripAt = 0.7;
 
   // Pleasant electric saw synth (Prune Saw & Limb/Buck)
   private sawOsc: OscillatorNode | null = null;
@@ -45,11 +166,25 @@ export class AudioEngine {
   private csClock = 0;
   private csPrevCutting = false;
 
+  // Live falling-tree air-rush & foliage rustle voice
+  private fallVoice: {
+    whooshSrc: AudioBufferSourceNode;
+    whooshFilter: BiquadFilterNode;
+    whooshGain: GainNode;
+    rustleSrc: AudioBufferSourceNode;
+    rustleFilter: BiquadFilterNode;
+    rustleGain: GainNode;
+    height: number;
+    species: SpeciesSpec;
+    tearCrackFired: boolean;
+    clock: number;
+  } | null = null;
+
   private noiseBuffer: AudioBuffer | null = null;
   private birdTimer: number | null = null;
   private muted = false;
   private initialized = false;
-  private activeSawMode: 'none' | 'prune' | 'electric_buck' | 'chainsaw' = 'none';
+  private activeSawMode: 'none' | 'prune' | 'chainsaw' = 'none';
 
   public init(): void {
     if (this.initialized) {
@@ -70,6 +205,11 @@ export class AudioEngine {
       this.masterGain.gain.value = this.muted ? 0 : 0.65;
       this.masterGain.connect(this.ctx.destination);
 
+      // World SFX bus splits to dry master + site-specific convolution reverb
+      this.worldBus = this.ctx.createGain();
+      this.worldBus.gain.value = 1.0;
+      this.worldBus.connect(this.masterGain);
+
       // Shared white/pink noise buffer (3 seconds)
       const sr = this.ctx.sampleRate;
       const len = sr * 3;
@@ -86,14 +226,252 @@ export class AudioEngine {
         data[i] = (b0 + b1 + b2 + white * 0.12) * 0.85;
       }
 
+      this.setupEnvironmentReverb();
       this.setupWindAmbience();
+      this.setupWeatherAndSiteAmbience();
       this.setupSawSynth();
       this.setupTwoStrokeChainsaw();
       this.startBirdAmbience();
       this.initialized = true;
+      this.applyEnvironmentState();
     } catch {
       // AudioContext unavailable
     }
+  }
+
+  private getOrCreateSiteImpulse(site: SiteId): AudioBuffer | null {
+    if (!this.ctx) return null;
+    const cached = this.irCache.get(site);
+    if (cached) return cached;
+
+    const p = SITE_ACOUSTICS[site];
+    const sr = this.ctx.sampleRate;
+    const length = Math.max(1, Math.floor(sr * p.reverbDecay));
+    const buf = this.ctx.createBuffer(2, length, sr);
+
+    // Deterministic seeded noise so each environment's space feels consistent
+    let seed = site.split('').reduce((acc, ch) => acc * 31 + ch.charCodeAt(0), 17) >>> 0;
+    const nextRand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return (seed / 0xffffffff) * 2 - 1;
+    };
+
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buf.getChannelData(ch);
+      let lp = 0;
+      // Woodland foliage absorbs highs progressively deeper into the tail
+      const dampBase = 0.25 + (1 - p.canopyDensity) * 0.45;
+      for (let i = 0; i < length; i++) {
+        const t = i / length;
+        // Smooth bloom on attack (~18ms) followed by natural exponential decay
+        const attack = Math.min(1, i / (sr * 0.018));
+        const env = attack * Math.pow(1 - t, 2.35) * Math.exp(-t * 2.4);
+        const raw = nextRand();
+        const alpha = Math.max(0.06, dampBase * (1 - t * 0.72));
+        lp += (raw - lp) * alpha;
+        data[i] = lp * env;
+      }
+
+      // Distinct early reflections (nearby trunks, house siding, or alpine cliff walls)
+      const earlyCount = Math.round(5 + p.canopyDensity * 8);
+      for (let e = 0; e < earlyCount; e++) {
+        const delaySec =
+          site === 'kootenay_rockies'
+            ? 0.055 + e * 0.042 + Math.abs(nextRand()) * 0.025
+            : 0.012 + e * 0.017 + Math.abs(nextRand()) * 0.014;
+        const idx = Math.floor(delaySec * sr);
+        if (idx > 0 && idx < length) {
+          const amp = (0.32 / (1 + e * 0.35)) * (ch === 0 ? 1 : 0.92);
+          data[idx] += (nextRand() >= 0 ? 1 : -1) * amp;
+        }
+      }
+    }
+
+    this.irCache.set(site, buf);
+    return buf;
+  }
+
+  private setupEnvironmentReverb(): void {
+    if (!this.ctx || !this.masterGain || !this.worldBus) return;
+    this.envPreDelay = this.ctx.createDelay(0.15);
+    this.envPreDelay.delayTime.value = 0.018;
+
+    this.envReverbTone = this.ctx.createBiquadFilter();
+    this.envReverbTone.type = 'lowpass';
+    this.envReverbTone.frequency.value = 2400;
+    this.envReverbTone.Q.value = 0.7;
+
+    this.envConvolver = this.ctx.createConvolver();
+    const initialIr = this.getOrCreateSiteImpulse(this.currentSite);
+    if (initialIr) this.envConvolver.buffer = initialIr;
+
+    this.envReverbWet = this.ctx.createGain();
+    this.envReverbWet.gain.value = 0.25;
+
+    this.worldBus.connect(this.envPreDelay);
+    this.envPreDelay.connect(this.envReverbTone);
+    this.envReverbTone.connect(this.envConvolver);
+    this.envConvolver.connect(this.envReverbWet);
+    this.envReverbWet.connect(this.masterGain);
+  }
+
+  private setupWeatherAndSiteAmbience(): void {
+    if (!this.ctx || !this.masterGain || !this.noiseBuffer) return;
+
+    // 1. Light Rain: delicate canopy needle/leaf patter + warm ground drizzle bed
+    const rainCanopySrc = this.ctx.createBufferSource();
+    rainCanopySrc.buffer = this.noiseBuffer;
+    rainCanopySrc.loop = true;
+
+    this.rainCanopyFilter = this.ctx.createBiquadFilter();
+    this.rainCanopyFilter.type = 'bandpass';
+    this.rainCanopyFilter.frequency.value = 2400;
+    this.rainCanopyFilter.Q.value = 0.65;
+
+    this.rainCanopyGain = this.ctx.createGain();
+    this.rainCanopyGain.gain.value = 0.0001;
+
+    rainCanopySrc.connect(this.rainCanopyFilter);
+    this.rainCanopyFilter.connect(this.rainCanopyGain);
+    this.rainCanopyGain.connect(this.masterGain);
+    rainCanopySrc.start(0, 0.4);
+
+    const rainBedSrc = this.ctx.createBufferSource();
+    rainBedSrc.buffer = this.noiseBuffer;
+    rainBedSrc.loop = true;
+
+    this.rainBedFilter = this.ctx.createBiquadFilter();
+    this.rainBedFilter.type = 'bandpass';
+    this.rainBedFilter.frequency.value = 780;
+    this.rainBedFilter.Q.value = 0.55;
+
+    this.rainBedGain = this.ctx.createGain();
+    this.rainBedGain.gain.value = 0.0001;
+
+    rainBedSrc.connect(this.rainBedFilter);
+    this.rainBedFilter.connect(this.rainBedGain);
+    this.rainBedGain.connect(this.masterGain);
+    rainBedSrc.start(0, 1.3);
+
+    // 2. Babbling valley creek water murmur (Misty Valley Creek)
+    const creekSrc = this.ctx.createBufferSource();
+    creekSrc.buffer = this.noiseBuffer;
+    creekSrc.loop = true;
+
+    this.creekFilter = this.ctx.createBiquadFilter();
+    this.creekFilter.type = 'bandpass';
+    this.creekFilter.frequency.value = 920;
+    this.creekFilter.Q.value = 1.1;
+
+    this.creekGain = this.ctx.createGain();
+    this.creekGain.gain.value = 0.0001;
+
+    creekSrc.connect(this.creekFilter);
+    this.creekFilter.connect(this.creekGain);
+    this.creekGain.connect(this.masterGain);
+    creekSrc.start(0, 0.8);
+
+    // 3. Distant rolling Pacific surf (Headland & Storm Bluff)
+    const surfSrc = this.ctx.createBufferSource();
+    surfSrc.buffer = this.noiseBuffer;
+    surfSrc.loop = true;
+
+    this.surfFilter = this.ctx.createBiquadFilter();
+    this.surfFilter.type = 'lowpass';
+    this.surfFilter.frequency.value = 340;
+    this.surfFilter.Q.value = 0.7;
+
+    this.surfGain = this.ctx.createGain();
+    this.surfGain.gain.value = 0.0001;
+
+    surfSrc.connect(this.surfFilter);
+    this.surfFilter.connect(this.surfGain);
+    this.surfGain.connect(this.masterGain);
+    surfSrc.start(0, 1.9);
+  }
+
+  /**
+   * Configure environment acoustics (site-specific reverb, valley creek, ocean surf)
+   * and weather soundscape (e.g. gentle light rain patter & canopy drips).
+   */
+  public setEnvironment(site: SiteId, weather: WeatherId): void {
+    this.currentSite = site;
+    this.currentWeather = weather;
+    if (this.initialized) {
+      this.applyEnvironmentState();
+    }
+  }
+
+  private applyEnvironmentState(): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const p = SITE_ACOUSTICS[this.currentSite];
+    const isRain = this.currentWeather === 'light_rain';
+
+    // Update convolution reverb space & tone
+    if (this.envConvolver) {
+      const ir = this.getOrCreateSiteImpulse(this.currentSite);
+      if (ir && this.envConvolver.buffer !== ir) {
+        this.envConvolver.buffer = ir;
+      }
+    }
+    if (this.envPreDelay) {
+      this.envPreDelay.delayTime.setTargetAtTime(p.preDelay, now, 0.15);
+    }
+    if (this.envReverbTone) {
+      // Wet rain-soaked foliage subtly softens high reflections even further
+      const cutoff = isRain ? p.reverbLowpass * 0.84 : p.reverbLowpass;
+      this.envReverbTone.frequency.setTargetAtTime(cutoff, now, 0.25);
+    }
+    if (this.envReverbWet) {
+      this.envReverbWet.gain.setTargetAtTime(p.reverbWet, now, 0.25);
+    }
+
+    // Light rain bed: slightly richer canopy patter in wooded sites vs open sites
+    const canopyBoost = 0.8 + p.canopyDensity * 0.45;
+    if (this.rainCanopyGain && this.rainCanopyFilter) {
+      this.rainCanopyGain.gain.setTargetAtTime(isRain ? 0.088 * canopyBoost : 0.0001, now, 0.45);
+      this.rainCanopyFilter.frequency.setTargetAtTime(
+        2050 + p.canopyDensity * 550,
+        now,
+        0.45
+      );
+    }
+    if (this.rainBedGain) {
+      this.rainBedGain.gain.setTargetAtTime(isRain ? 0.056 : 0.0001, now, 0.45);
+    }
+
+    // Site water ambience (creek & ocean surf)
+    if (this.creekGain) {
+      this.creekGain.gain.setTargetAtTime(Math.max(0.0001, p.creekGain), now, 0.5);
+    }
+    if (this.surfGain) {
+      this.surfGain.gain.setTargetAtTime(Math.max(0.0001, p.surfGain), now, 0.5);
+    }
+
+    // Re-apply wind filter balance for rain vs dry air
+    this.setWindLevel(this.currentWindSpeed);
+  }
+
+  private playRainDrip(): void {
+    if (!this.ctx || !this.worldBus) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    osc.type = 'sine';
+    const startFreq = 920 + Math.random() * 1100;
+    osc.frequency.setValueAtTime(startFreq, now);
+    osc.frequency.exponentialRampToValueAtTime(startFreq * (1.35 + Math.random() * 0.25), now + 0.036);
+
+    const gain = this.ctx.createGain();
+    const peak = 0.012 + Math.random() * 0.014;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(peak, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
+
+    osc.connect(gain);
+    gain.connect(this.worldBus);
+    osc.start(now);
+    osc.stop(now + 0.065);
   }
 
   private setupWindAmbience(): void {
@@ -117,7 +495,7 @@ export class AudioEngine {
   }
 
   private setupSawSynth(): void {
-    if (!this.ctx || !this.masterGain) return;
+    if (!this.ctx || !this.worldBus) return;
     this.sawOsc = this.ctx.createOscillator();
     this.sawOsc.type = 'sawtooth';
     this.sawOsc.frequency.value = 65;
@@ -141,14 +519,14 @@ export class AudioEngine {
     this.sawSubOsc.connect(subGain);
     subGain.connect(this.sawFilter);
     this.sawFilter.connect(this.sawGain);
-    this.sawGain.connect(this.masterGain);
+    this.sawGain.connect(this.worldBus);
 
     this.sawOsc.start();
     this.sawSubOsc.start();
   }
 
   private setupTwoStrokeChainsaw(): void {
-    if (!this.ctx || !this.masterGain || !this.noiseBuffer) return;
+    if (!this.ctx || !this.worldBus || !this.noiseBuffer) return;
 
     // 1. Custom asymmetric combustion-pulse PeriodicWave (sharp exhaust pressure spike + warm rolloff)
     const harmonics = 28;
@@ -281,7 +659,7 @@ export class AudioEngine {
     this.csChainBiteGain.connect(comp);
 
     comp.connect(this.csBusGain);
-    this.csBusGain.connect(this.masterGain);
+    this.csBusGain.connect(this.worldBus);
 
     this.csEngineOsc.start();
     this.csSubOsc.start();
@@ -447,11 +825,45 @@ export class AudioEngine {
       ? 0.24 + Math.min(0.05, this.csCutIntensity * 0.03)
       : 0.088 + revNorm * 0.095;
     this.csBusGain.gain.setTargetAtTime(targetBusGain * (0.9 + 0.1 * sputterPulse), now, 0.03);
+
+    // Living weather & site ambience modulation (rain drips, creek burble, slow ocean surf swell)
+    this.ambienceClock += dt;
+    const siteProfile = SITE_ACOUSTICS[this.currentSite];
+    if (this.currentWeather === 'light_rain') {
+      if (this.rainCanopyFilter) {
+        const gustShimmer = Math.sin(this.ambienceClock * 0.7) * 180 + Math.sin(this.ambienceClock * 1.9) * 90;
+        this.rainCanopyFilter.frequency.setTargetAtTime(
+          2050 + siteProfile.canopyDensity * 550 + gustShimmer,
+          now,
+          0.18
+        );
+      }
+      if (!this.muted && this.ctx.state === 'running' && this.ambienceClock >= this.nextRainDripAt) {
+        this.playRainDrip();
+        this.nextRainDripAt = this.ambienceClock + 0.35 + Math.random() * 0.95;
+      }
+    }
+    if (siteProfile.creekGain > 0 && this.creekFilter && this.creekGain) {
+      const burble = Math.sin(this.ambienceClock * 2.1) * 140 + Math.sin(this.ambienceClock * 4.7) * 75;
+      this.creekFilter.frequency.setTargetAtTime(920 + burble, now, 0.14);
+      this.creekGain.gain.setTargetAtTime(
+        siteProfile.creekGain * (0.9 + 0.1 * Math.sin(this.ambienceClock * 1.15)),
+        now,
+        0.18
+      );
+    }
+    if (siteProfile.surfGain > 0 && this.surfFilter && this.surfGain) {
+      // Slow 8-second rolling Pacific wave swell
+      const swell = 0.5 + 0.5 * Math.sin(this.ambienceClock * 0.78);
+      this.surfFilter.frequency.setTargetAtTime(220 + swell * 240, now, 0.25);
+      this.surfGain.gain.setTargetAtTime(siteProfile.surfGain * (0.58 + swell * 0.55), now, 0.25);
+    }
   }
 
   private startBirdAmbience(): void {
     const schedule = () => {
-      const delay = 5500 + Math.random() * 11000;
+      const rainDelay = this.currentWeather === 'light_rain' ? 1.8 : 1.0;
+      const delay = (5500 + Math.random() * 11000) * rainDelay;
       this.birdTimer = window.setTimeout(() => {
         if (!this.muted && this.ctx && this.ctx.state === 'running') {
           this.playDistantBird();
@@ -463,10 +875,11 @@ export class AudioEngine {
   }
 
   private playDistantBird(): void {
-    if (!this.ctx || !this.masterGain) return;
+    if (!this.ctx || !this.worldBus) return;
     const now = this.ctx.currentTime;
     const baseFreq = 2100 + Math.random() * 1400;
     const chirps = Math.random() > 0.4 ? 2 : 3;
+    const rainQuiet = this.currentWeather === 'light_rain' ? 0.6 : 1.0;
 
     for (let i = 0; i < chirps; i++) {
       const t = now + i * 0.16;
@@ -478,26 +891,32 @@ export class AudioEngine {
       osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.92, t + 0.13);
 
       gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.linearRampToValueAtTime(0.018, t + 0.02);
+      gain.gain.linearRampToValueAtTime(0.018 * rainQuiet, t + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
 
       osc.connect(gain);
-      gain.connect(this.masterGain);
+      gain.connect(this.worldBus);
       osc.start(t);
       osc.stop(t + 0.15);
     }
   }
 
   public setWindLevel(windSpeed: number): void {
+    this.currentWindSpeed = windSpeed;
     if (!this.ctx || !this.windGain || !this.windFilter) return;
     const now = this.ctx.currentTime;
     const clamped = Math.max(0.05, Math.min(1, windSpeed));
-    this.windGain.gain.setTargetAtTime(0.05 + clamped * 0.16, now, 0.4);
-    this.windFilter.frequency.setTargetAtTime(260 + clamped * 480, now, 0.4);
+    const rainSoften = this.currentWeather === 'light_rain' ? 0.8 : 1.0;
+    this.windGain.gain.setTargetAtTime((0.05 + clamped * 0.16) * rainSoften, now, 0.4);
+    this.windFilter.frequency.setTargetAtTime(
+      (260 + clamped * 480) * (this.currentWeather === 'light_rain' ? 0.86 : 1.0),
+      now,
+      0.4
+    );
   }
 
   public setSawActive(
-    mode: 'none' | 'prune' | 'electric_buck' | 'chainsaw',
+    mode: 'none' | 'prune' | 'chainsaw',
     intensity = 1,
     woodDensity = 1
   ): void {
@@ -520,24 +939,13 @@ export class AudioEngine {
       return;
     }
 
-    // Electric saws (Prune Saw & Limb/Buck): keep their pleasant electric whir!
+    // Electric Prune Saw: crisp rhythmic electric pole pruner hum
     this.csCutting = false;
-    if (mode === 'prune') {
-      // Crisp rhythmic electric pole pruner hum
-      const freq = 145 + intensity * 70 + Math.sin(now * 28) * 14;
-      this.sawOsc.frequency.setTargetAtTime(freq, now, 0.03);
-      this.sawSubOsc.frequency.setTargetAtTime(freq * 0.5, now, 0.03);
-      this.sawFilter.frequency.setTargetAtTime(1100, now, 0.05);
-      this.sawGain.gain.setTargetAtTime(0.085, now, 0.04);
-    } else {
-      // Pleasant torquey electric bucking/limbing saw hum (slightly deeper than prune saw)
-      const flutter = Math.sin(now * 36) * 7;
-      const freq = 92 + intensity * 52 + flutter;
-      this.sawOsc.frequency.setTargetAtTime(freq, now, 0.03);
-      this.sawSubOsc.frequency.setTargetAtTime(freq * 0.5, now, 0.03);
-      this.sawFilter.frequency.setTargetAtTime(760 + intensity * 460, now, 0.05);
-      this.sawGain.gain.setTargetAtTime(0.115, now, 0.04);
-    }
+    const freq = 145 + intensity * 70 + Math.sin(now * 28) * 14;
+    this.sawOsc.frequency.setTargetAtTime(freq, now, 0.03);
+    this.sawSubOsc.frequency.setTargetAtTime(freq * 0.5, now, 0.03);
+    this.sawFilter.frequency.setTargetAtTime(1100, now, 0.05);
+    this.sawGain.gain.setTargetAtTime(0.085, now, 0.04);
   }
 
   public playBranchSnap(): void {
@@ -558,7 +966,7 @@ export class AudioEngine {
 
     src.connect(filter);
     filter.connect(gain);
-    gain.connect(this.masterGain);
+    gain.connect(this.worldBus ?? this.masterGain);
     src.start(now);
     src.stop(now + 0.2);
   }
@@ -569,6 +977,7 @@ export class AudioEngine {
    */
   public playWedgeStrike(blowIndex = 0): void {
     if (!this.ctx || !this.masterGain) return;
+    const out = this.worldBus ?? this.masterGain;
     const now = this.ctx.currentTime;
     const pitchScale = 1 + Math.min(2, Math.max(0, blowIndex)) * 0.13 + (Math.random() - 0.5) * 0.025;
 
@@ -589,7 +998,7 @@ export class AudioEngine {
 
     tokOsc.connect(tokFilter);
     tokFilter.connect(tokGain);
-    tokGain.connect(this.masterGain);
+    tokGain.connect(out);
     tokOsc.start(now);
     tokOsc.stop(now + 0.125);
 
@@ -604,7 +1013,7 @@ export class AudioEngine {
     thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.155);
 
     thumpOsc.connect(thumpGain);
-    thumpGain.connect(this.masterGain);
+    thumpGain.connect(out);
     thumpOsc.start(now);
     thumpOsc.stop(now + 0.165);
 
@@ -623,7 +1032,7 @@ export class AudioEngine {
 
       nSrc.connect(nFilter);
       nFilter.connect(nGain);
-      nGain.connect(this.masterGain);
+      nGain.connect(out);
       nSrc.start(now);
       nSrc.stop(now + 0.05);
     }
@@ -643,16 +1052,382 @@ export class AudioEngine {
       rGain.gain.exponentialRampToValueAtTime(0.0008, now + dur);
 
       ring.connect(rGain);
-      rGain.connect(this.masterGain);
+      rGain.connect(out);
       ring.start(now);
       ring.stop(now + dur + 0.01);
     }
   }
 
-  public playTimberCreak(): void {
+  /**
+   * Derive species-specific wood & foliage acoustic characteristics for felling sounds.
+   */
+  private getSpeciesAcoustics(species?: SpeciesSpec): {
+    woodPitch: number;
+    crackSharpness: number;
+    fiberStringiness: number;
+    foliageBrightness: number;
+    leafFlutter: number;
+    massFactor: number;
+  } {
+    if (!species) {
+      return {
+        woodPitch: 1.0,
+        crackSharpness: 1.0,
+        fiberStringiness: 0.5,
+        foliageBrightness: 1.0,
+        leafFlutter: 0.4,
+        massFactor: 1.0,
+      };
+    }
+
+    const id = species.id;
+    const isConifer = species.category === 'conifer';
+    const density = species.woodDensity;
+
+    // Dense hardwoods have deeper resonant groans & explosive sharp cracks;
+    // soft poplars/alders pop higher & brisker; cedar/redwood/eucalyptus tear in long stringy fibers.
+    const isStringy =
+      id === 'western_red_cedar' ||
+      id === 'california_redwood' ||
+      id === 'eucalyptus' ||
+      id === 'western_hemlock';
+    const isBrittlePop =
+      id === 'trembling_aspen' ||
+      id === 'white_poplar' ||
+      id === 'red_alder' ||
+      id === 'weeping_willow';
+    const isDenseHardwood =
+      id === 'garry_oak' ||
+      id === 'bigleaf_maple' ||
+      id === 'arbutus' ||
+      id === 'japanese_maple' ||
+      id === 'chokecherry' ||
+      id === 'lilac';
+    const isGiant = id === 'california_redwood' || id === 'douglas_fir' || id === 'western_larch';
+
+    const woodPitch = isGiant
+      ? 0.78
+      : isDenseHardwood
+        ? 0.88
+        : isBrittlePop
+          ? 1.24
+          : isStringy
+            ? 0.92
+            : 1.0;
+
+    const crackSharpness = isDenseHardwood
+      ? 1.35
+      : id === 'western_larch' || id === 'eucalyptus'
+        ? 1.25
+        : isBrittlePop
+          ? 1.15
+          : isStringy
+            ? 0.82
+            : 1.05;
+
+    const fiberStringiness = isStringy
+      ? 1.0
+      : id === 'douglas_fir' || id === 'ponderosa_pine' || id === 'western_larch'
+        ? 0.65
+        : isDenseHardwood
+          ? 0.55
+          : 0.3;
+
+    // Foliage air-rush character: trembling aspen / poplar / willow shimmer high & papery;
+    // bigleaf maple / oak rush full-bodied; conifers sizzle with airy pine-needle whoosh.
+    const foliageBrightness =
+      id === 'trembling_aspen' || id === 'white_poplar' || id === 'weeping_willow'
+        ? 1.35
+        : id === 'western_larch'
+          ? 1.18
+          : isConifer
+            ? 0.92
+            : 1.08;
+
+    const leafFlutter =
+      id === 'trembling_aspen' || id === 'white_poplar'
+        ? 1.0
+        : isConifer
+          ? 0.25
+          : 0.78;
+
+    const massFactor = Math.max(0.7, Math.min(1.45, 0.65 + density * 0.45));
+
+    return {
+      woodPitch,
+      crackSharpness,
+      fiberStringiness,
+      foliageBrightness,
+      leafFlutter,
+      massFactor,
+    };
+  }
+
+  /**
+   * Schedule a single sharp wood-fiber snap / rifle-crack / splinter burst at absolute AudioContext time `t`.
+   */
+  private scheduleWoodCrack(
+    t: number,
+    intensity: number,
+    pitchScale: number,
+    sharpness: number,
+    stringy: boolean
+  ): void {
+    if (!this.ctx || !this.masterGain || !this.noiseBuffer) return;
+
+    // 1. Sharp fiber-snap impulse burst
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const offset = Math.random() * 2.0;
+
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime((1250 + Math.random() * 1100) * pitchScale * sharpness, t);
+    bp.frequency.exponentialRampToValueAtTime(340 * pitchScale, t + (stringy ? 0.14 : 0.065));
+    bp.Q.value = stringy ? 1.5 : 2.6;
+
+    const nGain = this.ctx.createGain();
+    const dur = stringy ? 0.12 + Math.random() * 0.09 : 0.045 + Math.random() * 0.045;
+    nGain.gain.setValueAtTime(0.0001, t);
+    nGain.gain.linearRampToValueAtTime(0.32 * intensity * Math.min(1.3, sharpness), t + 0.004);
+    nGain.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+
+    src.connect(bp);
+    bp.connect(nGain);
+    nGain.connect(this.worldBus ?? this.masterGain);
+    src.start(t, offset, dur + 0.02);
+
+    // 2. Woody resonant body "pop / crack" transient
+    const pop = this.ctx.createOscillator();
+    pop.type = 'triangle';
+    const fStart = (290 + Math.random() * 190) * pitchScale;
+    pop.frequency.setValueAtTime(fStart, t);
+    pop.frequency.exponentialRampToValueAtTime(fStart * 0.36, t + 0.075);
+
+    const pGain = this.ctx.createGain();
+    pGain.gain.setValueAtTime(0.24 * intensity, t);
+    pGain.gain.exponentialRampToValueAtTime(0.0008, t + 0.085);
+
+    pop.connect(pGain);
+    pGain.connect(this.worldBus ?? this.masterGain);
+    pop.start(t);
+    pop.stop(t + 0.095);
+  }
+
+  /**
+   * Begin the cinematic falling-tree soundscape:
+   * 1) Species-tuned hinge groaning, fiber splitting, and rifle-crack snaps as the tree breaks free
+   * 2) A live accelerating air-rush & foliage-rustle voice updated every frame until ground impact
+   */
+  public startTreeFallSound(species: SpeciesSpec, height: number, severedHinge = false): void {
+    if (!this.ctx || !this.masterGain || !this.noiseBuffer) return;
+    this.stopTreeFallSound();
+
+    const now = this.ctx.currentTime;
+    const ac = this.getSpeciesAcoustics(species);
+    const sizeScale = Math.max(0.65, Math.min(1.45, height / 20));
+
+    // A. Deep bending hinge-wood groans (sawtooth through resonant wood-cavity bandpass)
+    const groanCount = severedHinge ? 2 : 3;
+    for (let i = 0; i < groanCount; i++) {
+      const t = now + i * 0.21 + Math.random() * 0.04;
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sawtooth';
+      const f0 = (112 + Math.random() * 58) * ac.woodPitch;
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 0.56, t + 0.28);
+
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(420 * ac.woodPitch, t);
+      filter.frequency.linearRampToValueAtTime(260 * ac.woodPitch, t + 0.28);
+      filter.Q.value = 4.2;
+
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.0008, t);
+      gain.gain.linearRampToValueAtTime(0.15 * ac.massFactor * sizeScale, t + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.31);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.worldBus ?? this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.33);
+    }
+
+    // B. Sequential hinge-wood snapping, splitting & splintering cracks!
+    const snapTimes = severedHinge
+      ? [0.0, 0.04, 0.11, 0.2, 0.33, 0.48]
+      : [0.02, 0.13, 0.24, 0.38, 0.54, 0.72];
+
+    snapTimes.forEach((delay, idx) => {
+      const jitter = idx === 0 ? 0 : (Math.random() - 0.5) * 0.04;
+      const t = now + Math.max(0, delay + jitter);
+      const isBigSplit = severedHinge ? idx <= 1 : idx === 2 || idx === 4;
+      const isStringyRip = ac.fiberStringiness > 0.6 && (idx === 1 || idx === 3 || idx === 5);
+      const amp = (isBigSplit ? 1.15 : 0.65 + Math.random() * 0.3) * sizeScale;
+      this.scheduleWoodCrack(
+        t,
+        amp,
+        ac.woodPitch * (0.9 + Math.random() * 0.25),
+        ac.crackSharpness,
+        isStringyRip
+      );
+    });
+
+    // Extra longitudinal fiber-tearing rip for fibrous conifers & stringy eucalyptus
+    if (ac.fiberStringiness >= 0.65) {
+      const ripStart = now + 0.16;
+      const ripDur = 0.42;
+      const ripSrc = this.ctx.createBufferSource();
+      ripSrc.buffer = this.noiseBuffer;
+      const ripFilter = this.ctx.createBiquadFilter();
+      ripFilter.type = 'bandpass';
+      ripFilter.frequency.setValueAtTime(680 * ac.woodPitch, ripStart);
+      ripFilter.frequency.exponentialRampToValueAtTime(1480 * ac.woodPitch, ripStart + ripDur);
+      ripFilter.Q.value = 2.0;
+
+      const ripGain = this.ctx.createGain();
+      ripGain.gain.setValueAtTime(0.0008, ripStart);
+      ripGain.gain.linearRampToValueAtTime(0.16 * ac.fiberStringiness * sizeScale, ripStart + 0.1);
+      ripGain.gain.exponentialRampToValueAtTime(0.0008, ripStart + ripDur);
+
+      ripSrc.connect(ripFilter);
+      ripFilter.connect(ripGain);
+      ripGain.connect(this.worldBus ?? this.masterGain);
+      ripSrc.start(ripStart, Math.random() * 1.5, ripDur + 0.04);
+    }
+
+    // C. Continuous live air-rush + species-tuned foliage rustle during the fall!
+    const whooshSrc = this.ctx.createBufferSource();
+    whooshSrc.buffer = this.noiseBuffer;
+    whooshSrc.loop = true;
+
+    const whooshFilter = this.ctx.createBiquadFilter();
+    whooshFilter.type = 'bandpass';
+    whooshFilter.frequency.value = 180;
+    whooshFilter.Q.value = 0.85;
+
+    const whooshGain = this.ctx.createGain();
+    whooshGain.gain.value = 0.0001;
+
+    whooshSrc.connect(whooshFilter);
+    whooshFilter.connect(whooshGain);
+    whooshGain.connect(this.worldBus ?? this.masterGain);
+    whooshSrc.start(now, Math.random() * 2);
+
+    const rustleSrc = this.ctx.createBufferSource();
+    rustleSrc.buffer = this.noiseBuffer;
+    rustleSrc.loop = true;
+
+    const rustleFilter = this.ctx.createBiquadFilter();
+    rustleFilter.type = 'bandpass';
+    rustleFilter.frequency.value = 1850 * ac.foliageBrightness;
+    rustleFilter.Q.value = species.category === 'conifer' ? 1.1 : 1.65;
+
+    const rustleGain = this.ctx.createGain();
+    rustleGain.gain.value = 0.0001;
+
+    rustleSrc.connect(rustleFilter);
+    rustleFilter.connect(rustleGain);
+    rustleGain.connect(this.worldBus ?? this.masterGain);
+    rustleSrc.start(now, Math.random() * 2);
+
+    this.fallVoice = {
+      whooshSrc,
+      whooshFilter,
+      whooshGain,
+      rustleSrc,
+      rustleFilter,
+      rustleGain,
+      height,
+      species,
+      tearCrackFired: false,
+      clock: 0,
+    };
+  }
+
+  /**
+   * Modulate the falling tree's air-rush whoosh and foliage rustle in real time as it accelerates.
+   */
+  public updateTreeFallSound(fallAngle: number, fallVelocity: number, dt: number): void {
+    const fv = this.fallVoice;
+    if (!fv || !this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    fv.clock += dt;
+    const ac = this.getSpeciesAcoustics(fv.species);
+
+    // Mid-fall final hinge-fiber break right as gravity takes full hold!
+    if (!fv.tearCrackFired && fallAngle >= 0.42) {
+      fv.tearCrackFired = true;
+      const sizeScale = Math.max(0.7, Math.min(1.4, fv.height / 20));
+      this.scheduleWoodCrack(
+        now,
+        1.1 * sizeScale,
+        ac.woodPitch * 0.92,
+        ac.crackSharpness,
+        ac.fiberStringiness > 0.55
+      );
+      this.scheduleWoodCrack(
+        now + 0.055,
+        0.75 * sizeScale,
+        ac.woodPitch * 1.12,
+        ac.crackSharpness,
+        false
+      );
+    }
+
+    // Crown tip speed scales both the low air-displacement whoosh and high leaf/needle rustle
+    const tipSpeed = Math.min(1.35, (fallVelocity * Math.sqrt(fv.height / 18)) / 2.2);
+    const angleProgress = Math.min(1, fallAngle / (Math.PI * 0.5));
+    const rushEnergy = Math.min(1.2, tipSpeed * (0.35 + angleProgress * 0.85));
+    const sizeScale = Math.max(0.65, Math.min(1.35, fv.height / 20));
+
+    // Low-mid air whoosh sweeps up as the crown whips downward
+    const whooshFreq = 170 + rushEnergy * 540;
+    fv.whooshFilter.frequency.setTargetAtTime(whooshFreq, now, 0.035);
+    fv.whooshGain.gain.setTargetAtTime(Math.min(0.32, rushEnergy * 0.24 * sizeScale), now, 0.04);
+
+    // Species-tuned foliage rustle: fluttering papery leaves vs. airy conifer needle hiss
+    const flutter =
+      1 +
+      ac.leafFlutter *
+        (0.24 * Math.sin(fv.clock * 29) + 0.16 * Math.cos(fv.clock * 47.3));
+    const rustleFreq = (1550 + rushEnergy * 1950) * ac.foliageBrightness;
+    fv.rustleFilter.frequency.setTargetAtTime(Math.min(6200, rustleFreq), now, 0.035);
+    fv.rustleGain.gain.setTargetAtTime(
+      Math.min(0.26, rushEnergy * 0.19 * sizeScale * flutter),
+      now,
+      0.035
+    );
+  }
+
+  public stopTreeFallSound(): void {
+    const fv = this.fallVoice;
+    if (!fv || !this.ctx) {
+      this.fallVoice = null;
+      return;
+    }
+    const now = this.ctx.currentTime;
+    fv.whooshGain.gain.setTargetAtTime(0.0001, now, 0.03);
+    fv.rustleGain.gain.setTargetAtTime(0.0001, now, 0.03);
+    try {
+      fv.whooshSrc.stop(now + 0.14);
+      fv.rustleSrc.stop(now + 0.14);
+    } catch {
+      // already stopped
+    }
+    this.fallVoice = null;
+  }
+
+  public playTimberCreak(species?: SpeciesSpec, height = 20): void {
+    if (species) {
+      this.startTreeFallSound(species, height, false);
+      return;
+    }
     if (!this.ctx || !this.masterGain) return;
     const now = this.ctx.currentTime;
-    // Dramatic wood fibers splitting & groaning
     for (let i = 0; i < 4; i++) {
       const t = now + i * 0.19 + Math.random() * 0.05;
       const osc = this.ctx.createOscillator();
@@ -673,49 +1448,65 @@ export class AudioEngine {
 
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(this.masterGain);
+      gain.connect(this.worldBus ?? this.masterGain);
       osc.start(t);
       osc.stop(t + 0.24);
     }
   }
 
-  public playTimberCrash(weightScale = 1): void {
+  public playTimberCrash(weightScale = 1, species?: SpeciesSpec): void {
+    this.stopTreeFallSound();
     if (!this.ctx || !this.masterGain || !this.noiseBuffer) return;
+    const out = this.worldBus ?? this.masterGain;
     const now = this.ctx.currentTime;
+    const ac = this.getSpeciesAcoustics(species);
+    const heavyScale = Math.min(1.5, weightScale * ac.massFactor);
 
-    // Deep earth-shaking bass thump
+    // 1. Deep earth-shaking bass thump (heavier/lower for dense hardwoods & giant redwoods/firs)
     const bass = this.ctx.createOscillator();
     bass.type = 'sine';
-    bass.frequency.setValueAtTime(92, now);
-    bass.frequency.exponentialRampToValueAtTime(24, now + 0.65);
+    bass.frequency.setValueAtTime(88 / Math.sqrt(ac.massFactor), now);
+    bass.frequency.exponentialRampToValueAtTime(22, now + 0.68);
 
     const bassGain = this.ctx.createGain();
-    bassGain.gain.setValueAtTime(Math.min(0.6, 0.42 * weightScale), now);
-    bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.72);
+    bassGain.gain.setValueAtTime(Math.min(0.64, 0.42 * heavyScale), now);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.76);
 
     bass.connect(bassGain);
-    bassGain.connect(this.masterGain);
+    bassGain.connect(out);
     bass.start(now);
-    bass.stop(now + 0.75);
+    bass.stop(now + 0.8);
 
-    // Crashing boughs & rustling foliage burst
+    // 2. Bough-crushing branch snaps right on impact (crown hitting the ground!)
+    for (let i = 0; i < 4; i++) {
+      const t = now + 0.015 + i * 0.068 + Math.random() * 0.025;
+      this.scheduleWoodCrack(
+        t,
+        (0.95 - i * 0.16) * Math.min(1.3, weightScale),
+        ac.woodPitch * (0.95 + Math.random() * 0.35),
+        ac.crackSharpness,
+        i === 0 && ac.fiberStringiness > 0.6
+      );
+    }
+
+    // 3. Crashing boughs & species-tuned foliage cushion settle
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuffer;
 
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(1600, now);
-    filter.frequency.exponentialRampToValueAtTime(220, now + 1.15);
+    filter.frequency.setValueAtTime(1650 * ac.foliageBrightness, now);
+    filter.frequency.exponentialRampToValueAtTime(220, now + 1.25);
 
     const nGain = this.ctx.createGain();
-    nGain.gain.setValueAtTime(0.36 * Math.min(1.3, weightScale), now);
-    nGain.gain.exponentialRampToValueAtTime(0.001, now + 1.25);
+    nGain.gain.setValueAtTime(0.38 * Math.min(1.35, weightScale), now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 1.35);
 
     src.connect(filter);
     filter.connect(nGain);
-    nGain.connect(this.masterGain);
+    nGain.connect(out);
     src.start(now);
-    src.stop(now + 1.3);
+    src.stop(now + 1.4);
   }
 
   public playSuccessChime(): void {
@@ -794,6 +1585,7 @@ export class AudioEngine {
   }
 
   public dispose(): void {
+    this.stopTreeFallSound();
     if (this.birdTimer !== null) clearTimeout(this.birdTimer);
     if (this.ctx) {
       this.ctx.close().catch(() => {});

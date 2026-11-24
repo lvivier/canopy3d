@@ -35,7 +35,7 @@ export type SiteId =
 
 export type ToolId = 'prune' | 'fell' | 'wedge' | 'buck';
 
-export type WeatherId = 'sunny_morning' | 'misty_fog' | 'golden_hour' | 'coastal_gale';
+export type WeatherId = 'sunny_morning' | 'misty_fog' | 'light_rain' | 'golden_hour' | 'coastal_gale';
 
 export interface SpeciesSpec {
   id: SpeciesId;

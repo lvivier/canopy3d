@@ -250,6 +250,9 @@ export class GameEngine {
     this.clearCurrentScene();
     const previewContract = CAMPAIGN_CONTRACTS[2]; // Golden Hour Coastal Homestead with Cedar!
     this.env = buildEnvironment(this.scene, previewContract);
+    this.particles.setWeather(previewContract.weather);
+    this.audio.setEnvironment(previewContract.site, previewContract.weather);
+    this.audio.setWindLevel(previewContract.windSpeed);
     for (const tSpec of previewContract.trees) {
       const t = buildTreeRuntime(tSpec);
       t.selectionRing.visible = false;
@@ -284,6 +287,7 @@ export class GameEngine {
     this.cuttingTrunkStage = 'none';
     this.activeWedgeAnim = null;
     this.audio.setSawActive('none');
+    this.audio.stopTreeFallSound();
     this.cameraCtrl.cancelIntro(false);
   }
 
@@ -292,6 +296,7 @@ export class GameEngine {
     this.audio.playClick();
     this.audio.setSawActive('none');
     this.audio.setChainsawSelected(false);
+    this.audio.stopTreeFallSound();
     this.cameraCtrl.cancelIntro(false);
     this.screen = screen;
     if (screen === 'title') {
@@ -313,6 +318,8 @@ export class GameEngine {
     this.cameraCtrl.setAutoRotate(0);
 
     this.env = buildEnvironment(this.scene, contract);
+    this.particles.setWeather(contract.weather);
+    this.audio.setEnvironment(contract.site, contract.weather);
     this.audio.setWindLevel(contract.windSpeed);
 
     // Spawn all contract trees & drop zones
@@ -1419,7 +1426,7 @@ export class GameEngine {
           this.focusCameraForCurrentState(false);
           this.emitHUD();
         }
-        this.audio.setSawActive('electric_buck', 1.12);
+        this.audio.setSawActive('chainsaw', 1.12, topHit.tree.speciesSpec.woodDensity);
         return;
       }
       // Directly hovered clear sawlog ring
@@ -1430,7 +1437,7 @@ export class GameEngine {
           this.focusCameraForCurrentState(false);
           this.emitHUD();
         }
-        this.audio.setSawActive('electric_buck', 1.1);
+        this.audio.setSawActive('chainsaw', 1.1, this.hoveredBuckRing.tree.speciesSpec.woodDensity);
         return;
       }
       // Directly hovered fallen branch/crown bough -> zip it off to limb the log!
@@ -1443,7 +1450,7 @@ export class GameEngine {
             this.focusCameraForCurrentState(false);
             this.emitHUD();
           }
-          this.audio.setSawActive('electric_buck', 1.15);
+          this.audio.setSawActive('chainsaw', 1.02, branchTree.speciesSpec.woodDensity * 0.85);
           return;
         }
       }
@@ -1460,11 +1467,11 @@ export class GameEngine {
             const blockers = this.getObstructingLimbsForRing(t, r);
             if (blockers.length === 0) {
               this.cuttingBuck = { tree: t, ring: r };
-              this.audio.setSawActive('electric_buck', 1.1);
+              this.audio.setSawActive('chainsaw', 1.1, t.speciesSpec.woodDensity);
             } else {
               this.cuttingBranch = blockers[0];
               this.activeTreeId = t.spec.id;
-              this.audio.setSawActive('electric_buck', 1.15);
+              this.audio.setSawActive('chainsaw', 1.02, t.speciesSpec.woodDensity * 0.85);
             }
             return;
           }
@@ -1693,7 +1700,7 @@ export class GameEngine {
     this.cuttingTrunkStage = 'none';
     this.isLeftDown = false;
     this.audio.setSawActive('none');
-    this.audio.playTimberCreak();
+    this.audio.startTreeFallSound(tree.speciesSpec, tree.currentHeight, severedHinge);
 
     tree.stage = 'falling';
     tree.fallAngle = 0.02;
@@ -2029,8 +2036,9 @@ export class GameEngine {
         : 0.95 / (tree.speciesSpec.woodDensity * (0.7 + b.radius * 2.2));
       b.cutProgress = Math.min(1, b.cutProgress + cutRate * dt);
       this.audio.setSawActive(
-        isGroundLimbing ? 'electric_buck' : 'prune',
-        (isGroundLimbing ? 1.05 : 0.8) + b.cutProgress * 0.55
+        isGroundLimbing ? 'chainsaw' : 'prune',
+        (isGroundLimbing ? 1.0 : 0.8) + b.cutProgress * 0.45,
+        isGroundLimbing ? tree.speciesSpec.woodDensity * 0.85 : 1
       );
 
       // Sawdust spray right at branch collar!
@@ -2132,7 +2140,7 @@ export class GameEngine {
             const nextTree = this.trees.find((t) => t.spec.id === this.hoveredBranch?.treeId);
             if (nextTree?.stage === 'fallen') {
               this.cuttingBranch = this.hoveredBranch;
-              this.audio.setSawActive('electric_buck', 1.15);
+              this.audio.setSawActive('chainsaw', 1.02, nextTree.speciesSpec.woodDensity * 0.85);
             }
           }
         }
@@ -2271,7 +2279,7 @@ export class GameEngine {
       const rate = 0.92 / tree.speciesSpec.woodDensity;
       cut.cutProgress = Math.min(1, cut.cutProgress + rate * dt);
       this.audio.setSawActive(
-        this.activeTool === 'fell' ? 'chainsaw' : 'electric_buck',
+        'chainsaw',
         1.15,
         tree.speciesSpec.woodDensity
       );
@@ -2386,7 +2394,7 @@ export class GameEngine {
       const { tree, ring } = this.cuttingBuck;
       const rate = 1.15 / tree.speciesSpec.woodDensity;
       ring.cutProgress = Math.min(1, ring.cutProgress + rate * dt);
-      this.audio.setSawActive('electric_buck', 1.15);
+      this.audio.setSawActive('chainsaw', 1.12 + ring.cutProgress * 0.35, tree.speciesSpec.woodDensity);
 
       if (Math.random() < 0.7) {
         const wp = new THREE.Vector3();
@@ -2502,7 +2510,7 @@ export class GameEngine {
 
         // Epic earth-shaking thud, camera shake, dust & needle burst!
         const weightScale = fallH / 20;
-        this.audio.playTimberCrash(weightScale);
+        this.audio.playTimberCrash(weightScale, tree.speciesSpec);
         this.cameraCtrl.triggerShake(0.45 * weightScale);
         this.particles.spawnTimberImpact(
           new THREE.Vector3(tree.spec.x, 0, tree.spec.z),
@@ -2512,6 +2520,7 @@ export class GameEngine {
         );
         this.evaluateFallOutcome(tree);
       } else {
+        this.audio.updateTreeFallSound(tree.fallAngle, tree.fallVelocity, dt);
         this.applyTreeFallTransform(tree);
       }
     }
@@ -3073,7 +3082,7 @@ export class GameEngine {
     this.cameraCtrl.update(dt);
     const chainsawIdling =
       this.screen === 'playing' &&
-      this.activeTool === 'fell' &&
+      (this.activeTool === 'fell' || this.activeTool === 'buck') &&
       !this.cameraCtrl.isIntroPlaying() &&
       !this.contractFinished;
     this.audio.setChainsawSelected(chainsawIdling);

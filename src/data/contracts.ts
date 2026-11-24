@@ -409,7 +409,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     id: 'c9-pondside-willow',
     index: 9,
     title: 'Pondside Willow & Garden Maple',
-    subtitle: 'Coastal Town Yards · Lawn, Pond & Ornamental Care',
+    subtitle: 'Coastal Town · Lawn, Pond & Ornamental Care',
     site: 'coastal_town',
     weather: 'sunny_morning',
     difficulty: 2,
@@ -465,7 +465,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     id: 'c10-hedge-smoke',
     index: 10,
     title: 'Hedge Row & Purple Smoke',
-    subtitle: 'Coastal Town Yards · Ornamental Shaping & Tight Yard Fell',
+    subtitle: 'Coastal Town · Ornamental Shaping & Tight Yard Fell',
     site: 'coastal_town',
     weather: 'golden_hour',
     difficulty: 3,
@@ -535,7 +535,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     id: 'c11-roadside-poplars',
     index: 11,
     title: 'Roadside Poplar Escape',
-    subtitle: 'Coastal Town Yards · Invasive Removal & Spar Piecing',
+    subtitle: 'Coastal Town · Invasive Removal & Spar Piecing',
     site: 'coastal_town',
     weather: 'coastal_gale',
     difficulty: 4,
@@ -615,10 +615,10 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     windAngle: 0.85,
     unlockedTools: ['prune', 'fell', 'wedge', 'buck'],
     briefing:
-      'Sun-drenched bluffs overlooking the Salish Sea: preserve a gnarled coastal Garry Oak and a twisting cinnamon-bark Pacific Arbutus by clearing deadwood and trail-overhanging limbs, then tidy a blooming Pacific Rhododendron crowding the headland overlook gazebo.',
+      'Sun-drenched bluffs overlooking the Salish Sea: preserve a gnarled coastal Garry Oak and a twisting cinnamon-bark Arbutus by clearing deadwood and trail-overhanging limbs, then tidy a blooming Rhododendron crowding the headland overlook gazebo.',
     tips: [
       'All three coastal natives here are protected—stick strictly to the Prune Saw and remove only amber-flagged limbs!',
-      'Garry Oak and Pacific Arbutus are dense native hardwoods; hold steady on the collar for clean arborist cuts.',
+      'Garry Oak and Arbutus are dense native hardwoods; hold steady on the collar for clean arborist cuts.',
     ],
     basePayout: 840,
     hazards: [
@@ -681,10 +681,10 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     windAngle: 1.4,
     unlockedTools: ['prune', 'fell', 'wedge', 'buck'],
     briefing:
-      'Thick coastal fog wraps a southern Oregon headland grove. Piece down a towering 26.5m California Redwood so its spar clears the Coast Guard shed and buck its prized crimson timber, clear an adjacent Sitka Spruce down the south fog gap, and gently prune a blooming forest Pacific Rhododendron.',
+      'Thick coastal fog wraps a southern Oregon headland grove. Piece down a towering 26.5m California Redwood so its spar clears the Coast Guard shed and buck its prized crimson timber, clear an adjacent Sitka Spruce down the south fog gap, and gently prune a blooming forest Rhododendron.',
     tips: [
       'The 26.5m California Redwood is too tall for Redwood Meadow Lane—piece its top down at the golden ring to 17m so the aim shadow clears the Coast Guard shed!',
-      'Leave the blooming Pacific Rhododendron standing—prune only its 3 flagged limbs.',
+      'Leave the blooming Rhododendron standing—prune only its 3 flagged limbs.',
     ],
     basePayout: 1520,
     hazards: [
@@ -752,10 +752,10 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     windAngle: -2.4,
     unlockedTools: ['prune', 'fell', 'wedge', 'buck'],
     briefing:
-      'Golden-hour coastal gusts rattle an overgrown California headland windbreak of naturalized Blue Gum Eucalyptus threatening the coastal cottage and utility lines. Rebalance, wedge, fell, and buck both towering eucalyptus stems while preserving and trimming a native bluff-edge Pacific Arbutus.',
+      'Golden-hour coastal gusts rattle an overgrown California headland windbreak of naturalized Eucalyptus threatening the coastal cottage and utility lines. Rebalance, wedge, fell, and buck both towering eucalyptus stems while preserving and trimming a native bluff-edge Arbutus.',
     tips: [
-      'Blue Gum Eucalyptus is dense, heavy, and back-leans hard against onshore gusts—trim cottage-side limbs and tap wedges into the back cut!',
-      'Preserve the twisting cinnamon-bark Pacific Arbutus beside the bluff rail with careful collar pruning.',
+      'Eucalyptus is dense, heavy, and back-leans hard against onshore gusts—trim cottage-side limbs and tap wedges into the back cut!',
+      'Preserve the twisting cinnamon-bark Arbutus beside the bluff rail with careful collar pruning.',
     ],
     basePayout: 1950,
     hazards: [
@@ -1027,6 +1027,39 @@ export const CAMPAIGN_CONTRACTS: ContractSpec[] = [...CAMPAIGN_CONTRACTS_UNSORTE
     a.difficulty !== b.difficulty ? a.difficulty - b.difficulty : a.basePayout - b.basePayout
   )
   .map((c, i) => ({ ...c, index: i + 1 }));
+
+/** Default Free Cut site, weather, and wind tuned to each species' native / campaign habitat. */
+export function getSandboxEnvForSpecies(species: SpeciesId): {
+  site: SiteId;
+  weather: WeatherId;
+  windSpeed: number;
+} {
+  const defaults: Record<SpeciesId, { site: SiteId; weather: WeatherId; windSpeed: number }> = {
+    douglas_fir: { site: 'timber_ridge', weather: 'golden_hour', windSpeed: 0.22 },
+    western_red_cedar: { site: 'coastal_homestead', weather: 'golden_hour', windSpeed: 0.18 },
+    sitka_spruce: { site: 'coastal_homestead', weather: 'sunny_morning', windSpeed: 0.08 },
+    bigleaf_maple: { site: 'misty_creek', weather: 'sunny_morning', windSpeed: 0.14 },
+    red_alder: { site: 'misty_creek', weather: 'misty_fog', windSpeed: 0.12 },
+    western_hemlock: { site: 'timber_ridge', weather: 'golden_hour', windSpeed: 0.22 },
+    weeping_willow: { site: 'coastal_town', weather: 'sunny_morning', windSpeed: 0.16 },
+    japanese_maple: { site: 'coastal_town', weather: 'sunny_morning', windSpeed: 0.16 },
+    lilac: { site: 'coastal_town', weather: 'golden_hour', windSpeed: 0.24 },
+    smoke_tree: { site: 'coastal_town', weather: 'golden_hour', windSpeed: 0.24 },
+    white_poplar: { site: 'coastal_town', weather: 'coastal_gale', windSpeed: 0.44 },
+    arbutus: { site: 'pacific_headland', weather: 'sunny_morning', windSpeed: 0.2 },
+    garry_oak: { site: 'pacific_headland', weather: 'sunny_morning', windSpeed: 0.2 },
+    rhododendron: { site: 'pacific_headland', weather: 'misty_fog', windSpeed: 0.28 },
+    california_redwood: { site: 'pacific_headland', weather: 'misty_fog', windSpeed: 0.28 },
+    eucalyptus: { site: 'pacific_headland', weather: 'golden_hour', windSpeed: 0.46 },
+    ponderosa_pine: { site: 'kootenay_rockies', weather: 'sunny_morning', windSpeed: 0.16 },
+    western_larch: { site: 'kootenay_rockies', weather: 'golden_hour', windSpeed: 0.28 },
+    blue_spruce: { site: 'kootenay_rockies', weather: 'sunny_morning', windSpeed: 0.16 },
+    western_white_pine: { site: 'kootenay_rockies', weather: 'sunny_morning', windSpeed: 0.36 },
+    chokecherry: { site: 'kootenay_rockies', weather: 'sunny_morning', windSpeed: 0.16 },
+    trembling_aspen: { site: 'kootenay_rockies', weather: 'golden_hour', windSpeed: 0.28 },
+  };
+  return defaults[species];
+}
 
 export function createSandboxContract(opts: {
   species: SpeciesId;

@@ -144,7 +144,7 @@ body,
 
 /* Title Card */
 .title-card {
-  max-width: 720px;
+  max-width: 780px;
   width: 100%;
   background: var(--bg-glass);
   backdrop-filter: blur(18px);
@@ -184,24 +184,62 @@ body,
   margin-bottom: 26px;
 }
 
-.species-strip {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
+.species-showcase {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px 28px;
   margin-bottom: 22px;
+  text-align: left;
+}
+
+.species-group-title {
+  margin: 0 0 10px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.species-group-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--accent-emerald);
+  background: rgba(52, 211, 153, 0.12);
+  vertical-align: middle;
+}
+
+.species-group-pills {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .species-pill {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 12px;
+  min-width: 0;
+  padding: 6px 10px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: #dce8de;
+}
+
+.species-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .species-dot {
@@ -1227,7 +1265,7 @@ body,
 }
 
 @media (max-width: 520px), ((hover: none) and (pointer: coarse)) {
-  .title-screen .species-strip {
+  .title-screen .species-showcase {
     display: none;
   }
 

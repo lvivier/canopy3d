@@ -1,4 +1,4 @@
-import { CAMPAIGN_CONTRACTS, createSandboxContract } from '../data/contracts';
+import { CAMPAIGN_CONTRACTS, createSandboxContract, getSandboxEnvForSpecies } from '../data/contracts';
 import { SPECIES_LIST } from '../data/species';
 import { GameEngine } from '../gameplay/GameEngine';
 import { GameHUDState, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
@@ -36,7 +36,7 @@ const SITE_NAMES: Record<SiteId, string> = {
   misty_creek: 'Misty Valley Creek',
   timber_ridge: 'Old-Growth Timber Ridge',
   storm_bluff: 'Storm-Damaged Bluff',
-  coastal_town: 'Coastal Town Yards',
+  coastal_town: 'Coastal Town',
   pacific_headland: 'Pacific Headland',
   kootenay_rockies: 'East Kootenay Rockies',
 };
@@ -44,6 +44,7 @@ const SITE_NAMES: Record<SiteId, string> = {
 const WEATHER_NAMES: Record<WeatherId, string> = {
   sunny_morning: 'Crisp Morning',
   misty_fog: 'Coastal Mist',
+  light_rain: 'Light Rain',
   golden_hour: 'Golden Hour',
   coastal_gale: 'Pacific Gusts',
 };
@@ -58,11 +59,11 @@ export class UIManager {
   private lastScreen: GameHUDState['screen'] | null = null;
   private lastState: GameHUDState | null = null;
 
-  // Sandbox selector choices
+  // Sandbox selector choices (env defaults track the initially selected species)
   private sbSpecies: SpeciesId = 'douglas_fir';
-  private sbSite: SiteId = 'timber_ridge';
-  private sbWeather: WeatherId = 'golden_hour';
-  private sbWind = 0.25;
+  private sbSite: SiteId = getSandboxEnvForSpecies('douglas_fir').site;
+  private sbWeather: WeatherId = getSandboxEnvForSpecies('douglas_fir').weather;
+  private sbWind = getSandboxEnvForSpecies('douglas_fir').windSpeed;
 
   // Cached playing DOM refs so HUD updates smoothly without rebuilding DOM nodes or breaking clicks
   private playingContainer: HTMLDivElement | null = null;
@@ -148,14 +149,30 @@ export class UIManager {
           </button>
         </div>
 
-        <div class="species-strip">
-          ${SPECIES_LIST.map(
-            (s) => `
-            <div class="species-pill" title="${s.description}">
-              <span class="species-dot" style="background:${s.foliageColors[0]}; border-color:${s.heartwoodColor}"></span>
-              <span>${s.name}</span>
-            </div>`
-          ).join('')}
+        <div class="species-showcase">
+          ${(['conifer', 'deciduous'] as const)
+            .map((category) => {
+              const items = SPECIES_LIST.filter((s) => s.category === category).sort((a, b) =>
+                a.name.localeCompare(b.name)
+              );
+              const label = category === 'conifer' ? 'Conifers' : 'Hardwoods & Deciduous';
+              return `
+            <section class="species-group" aria-label="${label}">
+              <h3 class="species-group-title">${label} <span class="species-group-count">${items.length}</span></h3>
+              <div class="species-group-pills">
+                ${items
+                  .map(
+                    (s) => `
+                <div class="species-pill" title="${s.description}">
+                  <span class="species-dot" style="background:${s.foliageColors[0]}; border-color:${s.heartwoodColor}"></span>
+                  <span class="species-pill-name">${s.name}</span>
+                </div>`
+                  )
+                  .join('')}
+              </div>
+            </section>`;
+            })
+            .join('')}
         </div>
 
         <div class="controls-legend">
@@ -260,7 +277,7 @@ export class UIManager {
         </div>
 
         <div class="sandbox-section">
-          <label>Select PNW Tree Species</label>
+          <label>Select tree species</label>
           <div class="choice-grid species-choices">
             ${SPECIES_LIST.map(
               (s) => `
@@ -276,7 +293,7 @@ export class UIManager {
 
         <div class="sandbox-row">
           <div class="sandbox-section">
-            <label>Environment Site</label>
+            <label>Environment</label>
             <div class="choice-grid compact">
               ${(Object.keys(SITE_NAMES) as SiteId[])
                 .map(
@@ -288,7 +305,7 @@ export class UIManager {
           </div>
 
           <div class="sandbox-section">
-            <label>Coastal Weather</label>
+            <label>Weather</label>
             <div class="choice-grid compact">
               ${(Object.keys(WEATHER_NAMES) as WeatherId[])
                 .map(
@@ -301,12 +318,12 @@ export class UIManager {
         </div>
 
         <div class="sandbox-section">
-          <label>Coastal Wind Speed: <strong id="sb-wind-val">${Math.round(this.sbWind * 45)} mph</strong></label>
+          <label>Wind speed: <strong id="sb-wind-val">${Math.round(this.sbWind * 45)} mph</strong></label>
           <input type="range" id="sb-wind-slider" min="0" max="0.8" step="0.05" value="${this.sbWind}" />
         </div>
 
         <div class="sandbox-actions">
-          <button class="btn btn-primary btn-lg" id="btn-launch-sandbox">Enter Forest Clearing →</button>
+          <button class="btn btn-primary btn-lg" id="btn-launch-sandbox">Start Free Cut →</button>
         </div>
       </div>
     `;
@@ -316,19 +333,23 @@ export class UIManager {
     wrap.querySelectorAll('[data-species]').forEach((el) => {
       el.addEventListener('click', () => {
         this.sbSpecies = (el as HTMLElement).dataset.species as SpeciesId;
-        this.renderSandboxScreenRefresh();
+        const env = getSandboxEnvForSpecies(this.sbSpecies);
+        this.sbSite = env.site;
+        this.sbWeather = env.weather;
+        this.sbWind = env.windSpeed;
+        this.updateSandboxChoiceStates();
       });
     });
     wrap.querySelectorAll('[data-site]').forEach((el) => {
       el.addEventListener('click', () => {
         this.sbSite = (el as HTMLElement).dataset.site as SiteId;
-        this.renderSandboxScreenRefresh();
+        this.updateSandboxChoiceStates();
       });
     });
     wrap.querySelectorAll('[data-weather]').forEach((el) => {
       el.addEventListener('click', () => {
         this.sbWeather = (el as HTMLElement).dataset.weather as WeatherId;
-        this.renderSandboxScreenRefresh();
+        this.updateSandboxChoiceStates();
       });
     });
     const slider = wrap.querySelector('#sb-wind-slider') as HTMLInputElement;
@@ -348,9 +369,25 @@ export class UIManager {
     });
   }
 
-  private renderSandboxScreenRefresh(): void {
-    this.root.innerHTML = '';
-    this.renderSandboxScreen();
+  /** Toggle active choice pills in-place so the scrollable overlay does not jump to top. */
+  private updateSandboxChoiceStates(): void {
+    const wrap = this.root.querySelector('.sandbox-screen');
+    if (!wrap) return;
+
+    wrap.querySelectorAll<HTMLElement>('[data-species]').forEach((el) => {
+      el.classList.toggle('active', el.dataset.species === this.sbSpecies);
+    });
+    wrap.querySelectorAll<HTMLElement>('[data-site]').forEach((el) => {
+      el.classList.toggle('active', el.dataset.site === this.sbSite);
+    });
+    wrap.querySelectorAll<HTMLElement>('[data-weather]').forEach((el) => {
+      el.classList.toggle('active', el.dataset.weather === this.sbWeather);
+    });
+
+    const slider = wrap.querySelector('#sb-wind-slider') as HTMLInputElement | null;
+    const valEl = wrap.querySelector('#sb-wind-val');
+    if (slider) slider.value = String(this.sbWind);
+    if (valEl) valEl.textContent = `${Math.round(this.sbWind * 45)} mph`;
   }
 
   private mountPlayingHUD(state: GameHUDState): void {
@@ -408,7 +445,7 @@ export class UIManager {
           <p class="species-tip" id="hud-sp-tip"></p>
           <div class="lean-readout" id="hud-lean-box">
             <div class="lean-row">
-              <span>Lean / Balance</span>
+              <span>Lean</span>
               <span id="hud-lean-label">Balanced</span>
             </div>
             <div class="lean-bar-track">
@@ -645,7 +682,7 @@ export class UIManager {
           state.leanInfo.wedgesDriven > 0
             ? `Back-Lean (${state.leanInfo.wedgesDriven} Wedge)`
             : hasWedge
-              ? 'Back-Lean · Needs Wedge/Prune'
+              ? 'Back-Lean · Needs Prune and Wedges'
               : 'Back-Lean · Prune Heavy Limbs';
         lbl.style.color = '#fb923c';
       } else if (v > 0.15) {
@@ -765,7 +802,11 @@ export class UIManager {
         <div class="debrief-actions">
           ${d.hasNextContract ? `<button class="btn btn-primary btn-lg" id="btn-next-contract">Next Job →</button>` : ''}
           <button class="btn btn-secondary" id="btn-replay">Try Again</button>
-          <button class="btn btn-ghost" id="btn-all-contracts">All Jobs</button>
+          ${
+            state.contract.isSandbox
+              ? `<button class="btn btn-ghost" id="btn-free-cut">Another Free Cut</button>`
+              : `<button class="btn btn-ghost" id="btn-all-contracts">All Jobs</button>`
+          }
         </div>
       </div>
     `;
@@ -774,6 +815,7 @@ export class UIManager {
     wrap.querySelector('#btn-next-contract')?.addEventListener('click', () => this.engine.startNextContract());
     wrap.querySelector('#btn-replay')?.addEventListener('click', () => this.engine.replayContract());
     wrap.querySelector('#btn-all-contracts')?.addEventListener('click', () => this.engine.openScreen('contracts'));
+    wrap.querySelector('#btn-free-cut')?.addEventListener('click', () => this.engine.openScreen('sandbox'));
   }
 
   public getLastState(): GameHUDState | null {

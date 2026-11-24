@@ -257,7 +257,7 @@ export const PNW_SPECIES: Record<SpeciesId, SpeciesSpec> = {
 
   arbutus: {
     id: 'arbutus',
-    name: 'Pacific Arbutus',
+    name: 'Arbutus',
     latinName: 'Arbutus menziesii',
     category: 'deciduous',
     description:
@@ -326,7 +326,7 @@ export const PNW_SPECIES: Record<SpeciesId, SpeciesSpec> = {
 
   rhododendron: {
     id: 'rhododendron',
-    name: 'Pacific Rhododendron',
+    name: 'Rhododendron',
     latinName: 'Rhododendron macrophyllum',
     category: 'deciduous',
     description:
@@ -349,7 +349,7 @@ export const PNW_SPECIES: Record<SpeciesId, SpeciesSpec> = {
 
   eucalyptus: {
     id: 'eucalyptus',
-    name: 'Blue Gum Eucalyptus',
+    name: 'Eucalyptus',
     latinName: 'Eucalyptus globulus',
     category: 'deciduous',
     description:

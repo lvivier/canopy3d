@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WeatherId } from '../types';
 
 interface DynamicParticle {
   mesh: THREE.Mesh;
@@ -47,6 +48,9 @@ export class ParticleSystem {
   private rollingLogs: RollingLogSegment[] = [];
   private fallingTopSections: FallingTopSection[] = [];
   private ambientMotes: THREE.Points;
+  private rainLines: THREE.LineSegments;
+  private rainDrops: Array<{ x: number; y: number; z: number; speed: number; len: number }> = [];
+  private weather: WeatherId = 'sunny_morning';
   private chipGeo = new THREE.BoxGeometry(0.11, 0.05, 0.08);
   private dustGeo = new THREE.DodecahedronGeometry(0.32, 0);
   private leafGeo = new THREE.ConeGeometry(0.16, 0.28, 4);
@@ -55,6 +59,65 @@ export class ParticleSystem {
     this.scene = scene;
     this.ambientMotes = this.createAmbientMotes();
     this.scene.add(this.ambientMotes);
+    this.rainLines = this.createRainLines();
+    this.rainLines.visible = false;
+    this.scene.add(this.rainLines);
+  }
+
+  public setWeather(weather: WeatherId): void {
+    this.weather = weather;
+    const isRain = weather === 'light_rain';
+    this.rainLines.visible = isRain;
+
+    const moteMat = this.ambientMotes.material as THREE.PointsMaterial;
+    if (isRain) {
+      moteMat.color.set('#cfe2e8');
+      moteMat.opacity = 0.22;
+      moteMat.size = 0.16;
+    } else if (weather === 'misty_fog') {
+      moteMat.color.set('#e2efee');
+      moteMat.opacity = 0.34;
+      moteMat.size = 0.16;
+    } else {
+      moteMat.color.set('#fff6d6');
+      moteMat.opacity = 0.42;
+      moteMat.size = 0.14;
+    }
+  }
+
+  private createRainLines(): THREE.LineSegments {
+    const count = 680;
+    const positions = new Float32Array(count * 2 * 3);
+    this.rainDrops = [];
+
+    for (let i = 0; i < count; i++) {
+      const x = (Math.random() - 0.5) * 56;
+      const y = Math.random() * 28;
+      const z = (Math.random() - 0.5) * 56;
+      const speed = 17.5 + Math.random() * 6.5;
+      const len = 0.52 + Math.random() * 0.42;
+      this.rainDrops.push({ x, y, z, speed, len });
+
+      const idx = i * 6;
+      positions[idx] = x;
+      positions[idx + 1] = y;
+      positions[idx + 2] = z;
+      positions[idx + 3] = x;
+      positions[idx + 4] = y - len;
+      positions[idx + 5] = z;
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.LineBasicMaterial({
+      color: '#cfe3ec',
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+    });
+    const lines = new THREE.LineSegments(geo, mat);
+    lines.frustumCulled = false;
+    return lines;
   }
 
   private createAmbientMotes(): THREE.Points {
@@ -391,6 +454,40 @@ export class ParticleSystem {
       pos.setXYZ(i, x, y, z);
     }
     pos.needsUpdate = true;
+
+    // Fine slanted light-rain streaks reacting to wind speed & direction
+    if (this.weather === 'light_rain' && this.rainLines.visible) {
+      const rPos = this.rainLines.geometry.attributes.position as THREE.BufferAttribute;
+      const windDriftX = Math.cos(windAngle) * (0.75 + windSpeed * 6.5);
+      const windDriftZ = Math.sin(windAngle) * (0.75 + windSpeed * 6.5);
+
+      for (let i = 0; i < this.rainDrops.length; i++) {
+        const drop = this.rainDrops[i];
+        drop.x += windDriftX * dt;
+        drop.y -= drop.speed * dt;
+        drop.z += windDriftZ * dt;
+
+        if (drop.y < 0.05) {
+          drop.y = 24 + Math.random() * 6;
+          drop.x = (Math.random() - 0.5) * 56;
+          drop.z = (Math.random() - 0.5) * 56;
+        }
+        if (drop.x > 28) drop.x -= 56;
+        else if (drop.x < -28) drop.x += 56;
+        if (drop.z > 28) drop.z -= 56;
+        else if (drop.z < -28) drop.z += 56;
+
+        // Streak tail trails opposite to instantaneous velocity
+        const streakScale = drop.len / drop.speed;
+        const dx = windDriftX * streakScale;
+        const dz = windDriftZ * streakScale;
+
+        const idx = i * 2;
+        rPos.setXYZ(idx, drop.x - dx, drop.y + drop.len, drop.z - dz);
+        rPos.setXYZ(idx + 1, drop.x, drop.y, drop.z);
+      }
+      rPos.needsUpdate = true;
+    }
 
     // Dynamic chips, sawdust, leaves, dust
     for (let i = this.particles.length - 1; i >= 0; i--) {
