@@ -46,8 +46,8 @@ interface PropModelConfig {
 const PROP_MODEL_REGISTRY: Record<PropModelId, PropModelConfig> = {
   truck: {
     id: 'truck',
-    lod0Url: '/assets/models/truck/lod0.glb',
-    lod1Url: '/assets/models/truck/lod1.glb',
+    // High-detail lod0 (~37k tris) is omitted for now. Every quality level uses lod1 (~10k tris).
+    lod0Url: '/assets/models/truck/lod1.glb',
     targetLength: 5.15,
     rotationY: Math.PI, // Align grille/headlights to +Z matching procedural pickup orientation
     envMapIntensity: 0.92,

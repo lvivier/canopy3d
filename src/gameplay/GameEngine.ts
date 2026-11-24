@@ -575,7 +575,13 @@ export class GameEngine {
       });
       this.scene.add(tree.rootGroup);
       if (tSpec.dropZone) {
-        tree.dropZoneGroup = this.buildDropZoneVisual(tSpec.dropZone, contract.site);
+        const ringParams = (tree.selectionRing.geometry as THREE.RingGeometry).parameters;
+        tree.dropZoneGroup = this.buildDropZoneVisual(tSpec.dropZone, contract.site, {
+          x: tSpec.x,
+          z: tSpec.z,
+          // Stay just outside the pulsing selection ring so the two highlights don't stack
+          radius: (ringParams?.outerRadius ?? 1.5) + 0.28,
+        });
         this.scene.add(tree.dropZoneGroup);
       }
       this.trees.push(tree);
@@ -713,9 +719,99 @@ export class GameEngine {
   }
 
   /**
+   * Horizontal gap between the camera→target ground segment and an AABB footprint.
+   * Returns 0 when the sight line passes through the footprint, plus the segment
+   * parameter (0 at the camera, 1 at the target) of the closest approach.
+   */
+  private sightlineFootprintGap(
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    minX: number,
+    maxX: number,
+    minZ: number,
+    maxZ: number
+  ): { gap: number; t: number } {
+    const dx = bx - ax;
+    const dz = bz - az;
+    let t0 = 0;
+    let t1 = 1;
+    let hits = true;
+    const clip = (p: number, q: number) => {
+      if (!hits) return;
+      if (Math.abs(p) < 1e-8) {
+        if (q < 0) hits = false;
+        return;
+      }
+      const t = q / p;
+      if (p < 0) {
+        if (t > t1) hits = false;
+        else if (t > t0) t0 = t;
+      } else if (t < t0) hits = false;
+      else if (t < t1) t1 = t;
+    };
+    clip(-dx, ax - minX);
+    clip(dx, maxX - ax);
+    clip(-dz, az - minZ);
+    clip(dz, maxZ - az);
+    if (hits && t0 <= t1) return { gap: 0, t: t0 };
+
+    const segDist = (
+      cx: number,
+      cz: number,
+      ex: number,
+      ez: number
+    ): { dist: number; t: number } => {
+      const abx = dx;
+      const abz = dz;
+      const cdx = ex - cx;
+      const cdz = ez - cz;
+      const acx = ax - cx;
+      const acz = az - cz;
+      const a = abx * abx + abz * abz;
+      const b = abx * cdx + abz * cdz;
+      const c = cdx * cdx + cdz * cdz;
+      const d = abx * acx + abz * acz;
+      const e = cdx * acx + cdz * acz;
+      const denom = a * c - b * b;
+      let t = denom > 1e-8 ? (b * e - c * d) / denom : 0;
+      t = Math.min(1, Math.max(0, t));
+      let s = c > 1e-8 ? (b * t + e) / c : 0;
+      if (s < 0 || s > 1) {
+        s = Math.min(1, Math.max(0, s));
+        t = a > 1e-8 ? (b * s - d) / a : 0;
+        t = Math.min(1, Math.max(0, t));
+      }
+      const px = ax + abx * t;
+      const pz = az + abz * t;
+      const qx = cx + cdx * s;
+      const qz = cz + cdz * s;
+      return { dist: Math.hypot(px - qx, pz - qz), t };
+    };
+
+    let bestGap = Infinity;
+    let bestT = 0;
+    const edges: Array<[number, number, number, number]> = [
+      [minX, minZ, maxX, minZ],
+      [maxX, minZ, maxX, maxZ],
+      [maxX, maxZ, minX, maxZ],
+      [minX, maxZ, minX, minZ],
+    ];
+    for (const [cx, cz, ex, ez] of edges) {
+      const hit = segDist(cx, cz, ex, ez);
+      if (hit.dist < bestGap) {
+        bestGap = hit.dist;
+        bestT = hit.t;
+      }
+    }
+    return { gap: bestGap, t: bestT };
+  }
+
+  /**
    * Softly fade non-active playable trees that sit between the camera and the
    * current subject / action focus, so the working tree stays readable.
-   * Fallen / bucked trees use a wider XZ corridor test (no strict height gate)
+   * Fallen / bucked trees use a slightly wider footprint test (no strict height gate)
    * so a downed crown lying across the view still dissolves.
    */
   private updatePlayableTreeOcclusion(
@@ -728,7 +824,6 @@ export class GameEngine {
     const dy = targetPos.y - cameraPos.y;
     const dz = targetPos.z - cameraPos.z;
     const horizLenSq = dx * dx + dz * dz;
-    const invHorizLenSq = horizLenSq > 0.001 ? 1 / horizLenSq : 0;
     const lerpRate = Math.min(1, 8.5 * dt);
     const playing = this.screen === 'playing';
 
@@ -768,33 +863,26 @@ export class GameEngine {
             );
           }
 
-          // Sight-corridor fade between camera and the active action focus
-          if (invHorizLenSq > 0) {
-            const uRaw =
-              ((this._occCenter.x - cameraPos.x) * dx + (this._occCenter.z - cameraPos.z) * dz) *
-              invHorizLenSq;
-            const uLo = isDowned ? -0.2 : -0.15;
-            const uHi = isDowned ? 1.05 : 0.95;
-            if (uRaw > uLo && uRaw < uHi) {
-              const u = THREE.MathUtils.clamp(uRaw, 0, 1);
-              const px = cameraPos.x + dx * u;
-              const py = cameraPos.y + dy * u;
-              const pz = cameraPos.z + dz * u;
-
-              // Downed trees: ignore strict height gate — a horizontal canopy still blocks the view
-              const heightOk = isDowned || (py >= yMin && py <= yMax);
-              if (heightOk) {
-                const perpDist = Math.hypot(this._occCenter.x - px, this._occCenter.z - pz);
-                const clearRadius = rMax * (isDowned ? 0.85 : 0.85) + (isDowned ? 2.4 : 1.8) + (1 - u) * 3.0;
-                const softBand = isDowned ? 5.5 : 3.8;
-                if (perpDist < clearRadius + softBand) {
-                  const sightFactor = THREE.MathUtils.clamp(
-                    (perpDist - clearRadius) / softBand,
-                    minFade,
-                    1
-                  );
-                  targetFade = Math.min(targetFade, sightFactor);
-                }
+          // Fade only when the sight line passes through this tree's footprint.
+          // A neighbor standing beside the subject (like the homestead alder next to the spruce) stays solid.
+          if (horizLenSq > 0.001) {
+            const { gap, t } = this.sightlineFootprintGap(
+              cameraPos.x,
+              cameraPos.z,
+              targetPos.x,
+              targetPos.z,
+              this._occBox.min.x,
+              this._occBox.max.x,
+              this._occBox.min.z,
+              this._occBox.max.z
+            );
+            const py = cameraPos.y + dy * t;
+            const heightOk = isDowned || (py >= yMin && py <= yMax);
+            if (heightOk) {
+              const softBand = isDowned ? 2.4 : 1.05;
+              if (gap < softBand) {
+                const sightFactor = THREE.MathUtils.clamp(gap / softBand, minFade, 1);
+                targetFade = Math.min(targetFade, sightFactor);
               }
             }
           }
@@ -1301,7 +1389,8 @@ export class GameEngine {
 
   private buildDropZoneVisual(
     dz: NonNullable<TreeRuntime['spec']['dropZone']>,
-    site: SiteId
+    site: SiteId,
+    treeClearance: { x: number; z: number; radius: number }
   ): THREE.Group {
     const g = new THREE.Group();
     g.position.set(dz.x, 0, dz.z);
@@ -1352,6 +1441,7 @@ export class GameEngine {
     const strip = new THREE.Mesh(stripGeo, stripMat);
     // Draw after transparent roads so the landing mat composites on top of gravel and asphalt
     strip.renderOrder = 6;
+    this.applyDropZoneTreeClearance(stripMat, treeClearance);
     g.add(strip);
 
     const borderMat = new THREE.MeshBasicMaterial({
@@ -1361,6 +1451,7 @@ export class GameEngine {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
+    this.applyDropZoneTreeClearance(borderMat, treeClearance);
     const addBorder = (edge: Array<[number, number]>) => {
       const railPos: number[] = [];
       const railIdx: number[] = [];
@@ -1445,6 +1536,35 @@ export class GameEngine {
     };
 
     return g;
+  }
+
+  /** Fade the landing mat out around the trunk so it doesn't cover the selection ring. */
+  private applyDropZoneTreeClearance(
+    mat: THREE.MeshBasicMaterial,
+    tree: { x: number; z: number; radius: number }
+  ): void {
+    mat.customProgramCacheKey = () => 'drop-zone-tree-clear-v1';
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTreeXZ = { value: new THREE.Vector2(tree.x, tree.z) };
+      shader.uniforms.uClear = { value: tree.radius };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vDropWorld;')
+        .replace(
+          '#include <project_vertex>',
+          '#include <project_vertex>\nvDropWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;'
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          '#include <common>\nuniform vec2 uTreeXZ;\nuniform float uClear;\nvarying vec3 vDropWorld;'
+        )
+        .replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+          diffuseColor.a *= smoothstep(uClear, uClear + 0.55, distance(vDropWorld.xz, uTreeXZ));
+          if (diffuseColor.a < 0.012) discard;`
+        );
+    };
   }
 
   private bindInputEvents(): void {
@@ -3081,7 +3201,7 @@ export class GameEngine {
       }
     }
 
-    // Fade out & hide landing lane highlights/stakes once a tree is felled or completed
+    // Only the selected standing tree keeps its landing lane; others fade out as soon as you switch trees
     for (const tree of this.trees) {
       if (!tree.dropZoneGroup) continue;
       const dzData = tree.dropZoneGroup.userData as {
@@ -3092,11 +3212,11 @@ export class GameEngine {
 
       const isDone = tree.completed || tree.stage === 'fallen' || tree.stage === 'bucked';
       const isActive = activeTree?.spec.id === tree.spec.id;
-      const targetFade = isDone ? 0 : isActive ? 1 : 0.45;
-      const fadeSpeed = isDone ? 1.8 : 4.2;
+      const targetFade = !isDone && isActive ? 1 : 0;
+      const fadeSpeed = targetFade === 0 ? 6.5 : 4.2;
       dzData.fade += (targetFade - dzData.fade) * Math.min(1, fadeSpeed * dt);
 
-      if (isDone && dzData.fade < 0.015) {
+      if (targetFade === 0 && dzData.fade < 0.015) {
         dzData.fade = 0;
         tree.dropZoneGroup.visible = false;
       } else {

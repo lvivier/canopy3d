@@ -29,7 +29,7 @@ const PROP_CATALOG = [
     source: 'tevy.dev',
     sourcePage: 'https://tevy.dev/models/pickup-truck',
     license: 'CC0 1.0 Universal',
-    lod0Url: 'https://tevy.dev/models/pickup-truck/v1/lod0.glb',
+    // High-detail lod0 is omitted for now. Restore lod0Url to bring it back.
     lod1Url: 'https://tevy.dev/models/pickup-truck/v1/lod1.glb',
   },
 ];
@@ -83,11 +83,15 @@ async function main() {
     const outDir = path.join(MODELS_DIR, prop.id);
     await fs.mkdir(outDir, { recursive: true });
 
-    const lod0Dest = path.join(outDir, 'lod0.glb');
-    const r0 = await downloadFile(prop.lod0Url, lod0Dest);
-    console.log(
-      `  ${prop.id}/lod0.glb (${(r0.size / 1024).toFixed(1)} KB)${r0.skipped ? ' [cached]' : ' [downloaded]'}`
-    );
+    let lod0Rel = null;
+    if (prop.lod0Url) {
+      const lod0Dest = path.join(outDir, 'lod0.glb');
+      const r0 = await downloadFile(prop.lod0Url, lod0Dest);
+      console.log(
+        `  ${prop.id}/lod0.glb (${(r0.size / 1024).toFixed(1)} KB)${r0.skipped ? ' [cached]' : ' [downloaded]'}`
+      );
+      lod0Rel = `/assets/models/${prop.id}/lod0.glb`;
+    }
 
     let lod1Rel = null;
     if (prop.lod1Url) {
@@ -104,7 +108,7 @@ async function main() {
       source: prop.source,
       sourcePage: prop.sourcePage,
       license: prop.license,
-      lod0: `/assets/models/${prop.id}/lod0.glb`,
+      ...(lod0Rel ? { lod0: lod0Rel } : {}),
       lod1: lod1Rel,
     };
   }
