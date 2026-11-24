@@ -1,4 +1,11 @@
-import { CAMPAIGN_CONTRACTS, createSandboxContract, getSandboxEnvForSpecies } from '../data/contracts';
+import {
+  CAMPAIGN_CONTRACTS,
+  createSandboxContract,
+  findNextUnlockedJob,
+  getLevelGateJob,
+  getSandboxEnvForSpecies,
+  isCampaignJobUnlocked,
+} from '../data/contracts';
 import { SPECIES_LIST } from '../data/species';
 import { GameEngine } from '../gameplay/GameEngine';
 import { GameHUDState, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
@@ -34,7 +41,7 @@ const TOOL_META: Record<ToolId, { name: string; key: string; icon: string; desc:
 const SITE_NAMES: Record<SiteId, string> = {
   coastal_homestead: 'Coastal Homestead',
   misty_creek: 'Misty Valley Creek',
-  timber_ridge: 'Old-Growth Timber Ridge',
+  timber_ridge: 'Old Forest Ridge',
   storm_bluff: 'Storm-Damaged Bluff',
   coastal_town: 'Coastal Town',
   pacific_headland: 'Pacific Headland',
@@ -69,6 +76,8 @@ export class UIManager {
   private playingContainer: HTMLDivElement | null = null;
   private objectivesExpanded = false;
   private hudMenuOpen = false;
+  private hudMenuTab: 'game' | 'settings' = 'game';
+  private resetConfirmOpen = false;
 
   constructor(root: HTMLElement, engine: GameEngine) {
     this.root = root;
@@ -107,6 +116,11 @@ export class UIManager {
     if (state.screen !== this.lastScreen) {
       this.lastScreen = state.screen;
       this.playingContainer = null;
+      this.hudMenuOpen = false;
+      this.resetConfirmOpen = false;
+      document.getElementById('app')?.classList.remove('game-paused');
+      document.getElementById('app')?.style.removeProperty('--hud-menu-offset');
+      this.engine.setGameplayPaused(false);
       this.root.innerHTML = '';
 
       if (state.screen === 'title') this.renderTitleScreen(state);
@@ -125,7 +139,7 @@ export class UIManager {
   private renderTitleScreen(state: GameHUDState): void {
     const completedCount = Object.keys(state.completedContracts).length;
     const nextContract =
-      CAMPAIGN_CONTRACTS.find((c) => !state.completedContracts[c.id]) ?? CAMPAIGN_CONTRACTS[0];
+      findNextUnlockedJob(state.completedContracts, state.playerLevel) ?? CAMPAIGN_CONTRACTS[0];
 
     const wrap = document.createElement('div');
     wrap.className = 'overlay-screen title-screen';
@@ -134,7 +148,7 @@ export class UIManager {
         <div class="eyebrow">PACIFIC NORTHWEST ARBORIST &amp; LOGGING SIM</div>
         <h1 class="game-title">Canopy <span>3D</span></h1>
         <p class="game-subtitle">
-          Work as a Pacific Northwest arborist—prune damaged limbs, tame heavy crowns, and remove trees with careful felling cuts.
+          Run your own Pacific Northwest arborist crew: prune hazard limbs, rebalance heavy crowns, and fell with face notches, back cuts, wedges, and drop-zone aim.
         </p>
 
         <div class="title-actions">
@@ -211,10 +225,11 @@ export class UIManager {
       <div class="panel-shell">
         <div class="panel-header">
           <div>
-            <div class="eyebrow">CASCADIA ARBORIST DISPATCH</div>
-            <h2>Coastal Work Orders</h2>
+            <div class="eyebrow">JOB BOARD</div>
+            <h2>Jobs</h2>
           </div>
           <div class="panel-header-right">
+            <div class="level-badge">Arborist Level ${state.playerLevel}</div>
             <div class="earnings-badge">$${state.totalEarnings.toLocaleString()} Earned</div>
             <button class="btn btn-ghost" id="btn-back-title">← Back</button>
           </div>
@@ -223,11 +238,29 @@ export class UIManager {
         <div class="contracts-grid">
           ${CAMPAIGN_CONTRACTS.map((c) => {
             const done = state.completedContracts[c.id];
+            const unlocked = isCampaignJobUnlocked(c, state.playerLevel);
+            const isPreview = unlocked && c.difficulty > state.playerLevel;
             const speciesNames = [...new Set(c.trees.map((t) => SPECIES_LIST.find((s) => s.id === t.species)?.name))].join(', ');
             const stars = done ? '★'.repeat(done.stars) + '☆'.repeat(3 - done.stars) : '';
             const diffStr = '▲'.repeat(c.difficulty);
+            const gateJob = getLevelGateJob(c.difficulty);
+            const lockHint = !unlocked
+              ? c.difficulty > state.playerLevel + 1
+                ? `Arborist Level ${c.difficulty} required`
+                : gateJob
+                  ? `Beat Job #${gateJob.index} to unlock Level ${c.difficulty} jobs`
+                  : 'Locked'
+              : '';
+            const footerMain = done
+              ? stars
+              : isPreview
+                ? 'Level-up preview'
+                : unlocked
+                  ? 'Ready'
+                  : lockHint;
+            const footerGo = unlocked ? 'Go →' : '🔒';
             return `
-              <div class="contract-card ${done ? 'completed' : ''}" data-contract-id="${c.id}">
+              <div class="contract-card ${done ? 'completed' : ''} ${unlocked ? '' : 'locked'} ${isPreview ? 'preview' : ''}" data-contract-id="${c.id}" data-unlocked="${unlocked ? '1' : '0'}">
                 <div class="contract-top">
                   <span class="contract-num">Job #${c.index}</span>
                   <span class="contract-diff" title="Difficulty ${c.difficulty}/5">${diffStr}</span>
@@ -240,8 +273,8 @@ export class UIManager {
                   <span class="tag tag-pay">$${c.basePayout} Base</span>
                 </div>
                 <div class="contract-footer">
-                  <span class="contract-stars">${done ? stars : 'Ready to dispatch'}</span>
-                  <span class="contract-go">Launch →</span>
+                  <span class="contract-stars">${footerMain}</span>
+                  <span class="contract-go">${footerGo}</span>
                 </div>
               </div>
             `;
@@ -251,11 +284,16 @@ export class UIManager {
     `;
     this.root.appendChild(wrap);
 
-    wrap.querySelector('#btn-back-title')?.addEventListener('click', () => {
-      this.engine.openScreen('title');
+    const goBack = () => this.engine.goBackFromContracts();
+    const panel = wrap.querySelector('.panel-shell');
+    wrap.addEventListener('click', (e) => {
+      if (panel && !panel.contains(e.target as Node)) goBack();
     });
+
+    wrap.querySelector('#btn-back-title')?.addEventListener('click', goBack);
     wrap.querySelectorAll('.contract-card').forEach((card) => {
       card.addEventListener('click', () => {
+        if ((card as HTMLElement).dataset.unlocked !== '1') return;
         const id = (card as HTMLElement).dataset.contractId;
         const found = CAMPAIGN_CONTRACTS.find((c) => c.id === id);
         if (found) this.engine.startContract(found);
@@ -271,7 +309,7 @@ export class UIManager {
         <div class="panel-header">
           <div>
             <div class="eyebrow">FREE-CUT PRACTICE</div>
-            <h2>Coastal Sandbox Setup</h2>
+            <h2>Free Cut Setup</h2>
           </div>
           <button class="btn btn-ghost" id="btn-sb-back">← Back</button>
         </div>
@@ -329,7 +367,7 @@ export class UIManager {
     `;
     this.root.appendChild(wrap);
 
-    wrap.querySelector('#btn-sb-back')?.addEventListener('click', () => this.engine.openScreen('title'));
+    wrap.querySelector('#btn-sb-back')?.addEventListener('click', () => this.engine.goBackFromSandbox());
     wrap.querySelectorAll('[data-species]').forEach((el) => {
       el.addEventListener('click', () => {
         this.sbSpecies = (el as HTMLElement).dataset.species as SpeciesId;
@@ -394,6 +432,32 @@ export class UIManager {
     const hud = document.createElement('div');
     hud.className = 'hud-layer';
     hud.innerHTML = `
+      <div class="hud-menu-bar" id="hud-menu-bar" hidden>
+        <button type="button" class="icon-btn hud-menu-close active" id="btn-menu-close" title="Close menu" aria-label="Close menu">✕</button>
+        <div class="hud-menu-bar-inner">
+          <div class="hud-menu-bar-head">
+            <button type="button" class="hud-menu-home game-title hud-menu-game-title" id="btn-menu-home">
+              Canopy <span>3D</span>
+            </button>
+            <div class="hud-menu-tabs" role="tablist" aria-label="Menu">
+              <button type="button" class="hud-menu-tab active" role="tab" data-menu-tab="game">Game</button>
+              <button type="button" class="hud-menu-tab" role="tab" data-menu-tab="settings">Settings</button>
+            </div>
+          </div>
+          <div class="hud-menu-panel" data-menu-panel="game" role="tabpanel">
+            <button type="button" class="hud-menu-item" id="btn-menu-restart">↻ Restart job</button>
+            <button type="button" class="hud-menu-item" id="btn-menu-contracts">All Jobs</button>
+            <button type="button" class="hud-menu-item" id="btn-menu-sandbox">Free Cut</button>
+          </div>
+          <div class="hud-menu-panel" data-menu-panel="settings" role="tabpanel" hidden>
+            <button type="button" class="hud-menu-item" id="btn-menu-mute">🔊 Sound on</button>
+            <button type="button" class="hud-menu-item hud-menu-item-danger" id="btn-menu-reset-progress">Reset progress</button>
+          </div>
+        </div>
+      </div>
+      <div class="hud-menu-backdrop" id="hud-menu-backdrop" hidden></div>
+
+      <div class="hud-playfield" id="hud-playfield">
       <div class="hud-top-left">
         <div class="hud-card contract-hud-card" id="contract-hud-card">
           <div class="contract-hud-head">
@@ -420,20 +484,12 @@ export class UIManager {
 
       <div class="hud-top-right">
         <div class="hud-toolbar">
-          <div class="wind-pill" id="hud-wind" title="Coastal Wind">
+          <div class="wind-pill" id="hud-wind" title="Wind">
             <span class="wind-arrow" id="hud-wind-arrow">↑</span>
             <span id="hud-wind-text">4 mph</span>
           </div>
-          <button class="icon-btn hud-toolbar-desktop" id="btn-mute" title="Toggle Sound">🔊</button>
           <button class="icon-btn hud-toolbar-desktop" id="btn-restart" title="Restart Job">↻</button>
-          <div class="hud-menu-wrap">
-            <button class="icon-btn" id="btn-menu" title="Menu" aria-expanded="false">☰</button>
-            <div class="hud-menu-popover" id="hud-menu-popover" hidden>
-              <button type="button" class="hud-menu-item" id="btn-menu-mute">🔊 Sound on</button>
-              <button type="button" class="hud-menu-item" id="btn-menu-restart">↻ Restart job</button>
-              <button type="button" class="hud-menu-item" id="btn-menu-contracts">All Jobs</button>
-            </div>
-          </div>
+          <button class="icon-btn" id="btn-menu" title="Menu" aria-expanded="false">☰</button>
         </div>
 
         <div class="hud-card species-hud-card" id="hud-species-card">
@@ -445,8 +501,8 @@ export class UIManager {
           <p class="species-tip" id="hud-sp-tip"></p>
           <div class="lean-readout" id="hud-lean-box">
             <div class="lean-row">
-              <span>Lean</span>
-              <span id="hud-lean-label">Balanced</span>
+              <span class="lean-label">Lean</span>
+              <span class="lean-value" id="hud-lean-label">Balanced</span>
             </div>
             <div class="lean-bar-track">
               <div class="lean-bar-center"></div>
@@ -497,6 +553,21 @@ export class UIManager {
           <button class="orbit-btn" id="btn-orbit-right" title="Orbit Right (→ or E)">⟳</button>
         </div>
       </div>
+      </div>
+
+      <div class="hud-confirm-modal" id="hud-reset-confirm" hidden>
+        <button type="button" class="hud-confirm-scrim" id="btn-reset-confirm-scrim" aria-label="Close"></button>
+        <div class="hud-confirm-card" role="dialog" aria-labelledby="hud-reset-confirm-title" aria-modal="true">
+          <h3 class="hud-confirm-title" id="hud-reset-confirm-title">Reset all progress?</h3>
+          <p class="hud-confirm-body">
+            This clears completed jobs, earnings, and your Arborist Level. This cannot be undone.
+          </p>
+          <div class="hud-confirm-actions">
+            <button type="button" class="btn btn-ghost" id="btn-reset-confirm-cancel">Cancel</button>
+            <button type="button" class="btn hud-confirm-danger" id="btn-reset-confirm-ok">Reset progress</button>
+          </div>
+        </div>
+      </div>
     `;
 
     this.root.appendChild(hud);
@@ -507,43 +578,60 @@ export class UIManager {
     const toggleMute = () => this.engine.toggleMute();
     const restartJob = () => this.engine.replayContract();
     const openContracts = () => this.engine.openScreen('contracts');
+    const openSandbox = () => this.engine.openScreen('sandbox');
+    const goHome = () => this.engine.goHome();
 
-    hud.querySelector('#btn-mute')?.addEventListener('click', toggleMute);
     hud.querySelector('#btn-restart')?.addEventListener('click', restartJob);
-    hud.querySelector('#btn-menu-mute')?.addEventListener('click', () => {
-      toggleMute();
+    hud.querySelector('#btn-menu-home')?.addEventListener('click', () => {
       this.setHudMenuOpen(false);
+      goHome();
     });
+    hud.querySelector('#btn-menu-mute')?.addEventListener('click', () => toggleMute());
     hud.querySelector('#btn-menu-restart')?.addEventListener('click', () => {
-      restartJob();
       this.setHudMenuOpen(false);
+      restartJob();
     });
     hud.querySelector('#btn-menu-contracts')?.addEventListener('click', () => {
-      openContracts();
       this.setHudMenuOpen(false);
+      openContracts();
+    });
+    hud.querySelector('#btn-menu-sandbox')?.addEventListener('click', () => {
+      this.setHudMenuOpen(false);
+      openSandbox();
+    });
+    hud.querySelector('#btn-menu-reset-progress')?.addEventListener('click', () => {
+      this.setResetConfirmOpen(true);
+    });
+    hud.querySelector('#btn-reset-confirm-cancel')?.addEventListener('click', () => {
+      this.setResetConfirmOpen(false);
+    });
+    hud.querySelector('#btn-reset-confirm-scrim')?.addEventListener('click', () => {
+      this.setResetConfirmOpen(false);
+    });
+    hud.querySelector('#btn-reset-confirm-ok')?.addEventListener('click', () => {
+      this.setResetConfirmOpen(false);
+      this.setHudMenuOpen(false);
+      this.engine.resetPlayerProgress();
+    });
+
+    hud.querySelectorAll('.hud-menu-tab').forEach((tab) => {
+      tab.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = (tab as HTMLElement).dataset.menuTab as 'game' | 'settings' | undefined;
+        if (id) this.setHudMenuTab(id);
+      });
     });
 
     const menuBtn = hud.querySelector('#btn-menu') as HTMLButtonElement;
     menuBtn?.addEventListener('click', (e) => {
-      if (isTouchUi()) {
-        e.stopPropagation();
-        this.setHudMenuOpen(!this.hudMenuOpen);
-      } else {
-        openContracts();
-      }
+      e.stopPropagation();
+      this.setHudMenuOpen(!this.hudMenuOpen);
     });
-
-    hud.addEventListener('click', (e) => {
-      const t = e.target as Node;
-      const pop = hud.querySelector('#hud-menu-popover');
-      if (
-        this.hudMenuOpen &&
-        pop &&
-        !pop.contains(t) &&
-        !menuBtn.contains(t)
-      ) {
-        this.setHudMenuOpen(false);
-      }
+    hud.querySelector('#btn-menu-close')?.addEventListener('click', () => {
+      this.setHudMenuOpen(false);
+    });
+    hud.querySelector('#hud-menu-backdrop')?.addEventListener('click', () => {
+      if (!this.resetConfirmOpen) this.setHudMenuOpen(false);
     });
 
     const toggleObjectives = () => {
@@ -582,12 +670,59 @@ export class UIManager {
   private setHudMenuOpen(open: boolean): void {
     const hud = this.playingContainer;
     if (!hud) return;
+    if (!open) this.setResetConfirmOpen(false);
     this.hudMenuOpen = open;
-    const pop = hud.querySelector('#hud-menu-popover') as HTMLElement;
+    const bar = hud.querySelector('#hud-menu-bar') as HTMLElement;
+    const backdrop = hud.querySelector('#hud-menu-backdrop') as HTMLElement;
     const btn = hud.querySelector('#btn-menu') as HTMLButtonElement;
-    if (pop) pop.hidden = !open;
+    const app = document.getElementById('app');
+    if (bar) bar.hidden = !open;
+    if (backdrop) backdrop.hidden = !open;
+    hud.classList.toggle('hud-menu-open', open);
+    app?.classList.toggle('game-paused', open);
+    this.engine.setGameplayPaused(open);
     if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     btn?.classList.toggle('active', open);
+    if (open) {
+      this.hudMenuTab = 'game';
+      this.syncHudMenuTab(hud);
+      requestAnimationFrame(() => {
+        const h = bar?.offsetHeight ?? 0;
+        hud.style.setProperty('--hud-menu-offset', `${h}px`);
+        app?.style.setProperty('--hud-menu-offset', `${h}px`);
+      });
+    } else {
+      hud.style.removeProperty('--hud-menu-offset');
+      app?.style.removeProperty('--hud-menu-offset');
+    }
+  }
+
+  private setResetConfirmOpen(open: boolean): void {
+    const hud = this.playingContainer;
+    if (!hud) return;
+    this.resetConfirmOpen = open;
+    const modal = hud.querySelector('#hud-reset-confirm') as HTMLElement;
+    if (modal) modal.hidden = !open;
+  }
+
+  private setHudMenuTab(tab: 'game' | 'settings'): void {
+    const hud = this.playingContainer;
+    if (!hud) return;
+    this.hudMenuTab = tab;
+    this.syncHudMenuTab(hud);
+  }
+
+  private syncHudMenuTab(hud: HTMLElement): void {
+    hud.querySelectorAll('.hud-menu-tab').forEach((el) => {
+      const id = (el as HTMLElement).dataset.menuTab;
+      const active = id === this.hudMenuTab;
+      el.classList.toggle('active', active);
+      el.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    hud.querySelectorAll('.hud-menu-panel').forEach((el) => {
+      const id = (el as HTMLElement).dataset.menuPanel;
+      (el as HTMLElement).hidden = id !== this.hudMenuTab;
+    });
   }
 
   private syncObjectivesExpandedUi(hud: HTMLElement): void {
@@ -636,14 +771,12 @@ export class UIManager {
       chipCheck.textContent = nextOpen ? '○' : state.objectives.length > 0 ? '✓' : '○';
     }
 
-    // Wind & Mute
+    // Wind & sound (settings menu)
     const mph = Math.round(state.windSpeed * 45);
     (hud.querySelector('#hud-wind-text') as HTMLElement).textContent = `${mph} mph`;
     const windArrow = hud.querySelector('#hud-wind-arrow') as HTMLElement;
     const deg = (state.windAngle * 180) / Math.PI - state.cameraAngleDeg;
     windArrow.style.transform = `rotate(${deg}deg)`;
-    const muteGlyph = state.muted ? '🔇' : '🔊';
-    (hud.querySelector('#btn-mute') as HTMLElement).textContent = muteGlyph;
     const menuMute = hud.querySelector('#btn-menu-mute') as HTMLElement;
     if (menuMute) {
       menuMute.textContent = state.muted ? '🔇 Sound off' : '🔊 Sound on';

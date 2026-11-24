@@ -376,6 +376,8 @@ export interface GameHUDState {
   /** Contract progress */
   completedContracts: Record<string, { stars: number; score: number; earnings: number }>;
   totalEarnings: number;
+  /** Arborist level 1–5: unlocks jobs through completed level-gate contracts */
+  playerLevel: number;
   /** Debrief data */
   debrief?: {
     success: boolean;

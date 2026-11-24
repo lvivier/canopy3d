@@ -110,7 +110,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     briefing:
       'This Western Red Cedar leans heavily toward the cedar woodshed because of massive limbs on that side. Prune the flagged shed-side boughs first to rebalance its center of gravity, then fell it cleanly down the south meadow corridor.',
     tips: [
-      'Watch the Lean / Balance indicator drop as you prune the heavy shed-side branches!',
+      'Watch the Lean indicator drop as you prune the heavy shed-side boughs!',
       'Western Red Cedar wood is soft and cuts fast—release the saw carefully inside the green notch zone.',
     ],
     basePayout: 680,
@@ -181,7 +181,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     id: 'c5-timber-ridge',
     index: 5,
     title: 'Cascadia Timber Harvest',
-    subtitle: 'Old-Growth Timber Ridge · Selective Logging & Bucking',
+    subtitle: 'Old Forest Ridge · Selective Logging & Bucking',
     site: 'timber_ridge',
     weather: 'golden_hour',
     difficulty: 3,
@@ -189,10 +189,10 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     windAngle: 0.9,
     unlockedTools: ['prune', 'fell', 'buck'],
     briefing:
-      'Selective timber job on Cascadia Ridge. Fell two towering Douglas Firs and a Western Hemlock into designated skid corridors while protecting young cedar saplings—then switch to the Bucking Saw to slice the fallen trunks into mill-length sawlogs.',
+      'Selective timber job on Cascadia Ridge. Fell two towering Douglas Firs and a Western Hemlock into designated skid corridors while protecting young cedar saplings—then switch to Limb & Buck to slice the fallen trunks into mill-length sawlogs.',
     tips: [
       'Click any standing tree to select it and frame its drop corridor.',
-      'After a tree hits the ground, select the Bucking Saw and click the golden rings along the trunk to cut prime logs!',
+      'After a tree hits the ground, select Limb & Buck and click the golden rings along the trunk to cut prime sawlogs!',
       'Watch out for protected cedar saplings marked in red.',
     ],
     basePayout: 1150,
@@ -261,7 +261,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     briefing:
       'Strong Pacific gusts have pushed a massive Sitka Spruce into a dangerous back-lean toward the coastal overlook gazebo. Prune the wind-catching boughs, cut a textbook face notch & back cut, then drive Felling Wedges to lift it cleanly over center!',
     tips: [
-      'When a tree leans AWAY from your drop zone, the back cut alone won’t tip it—switch to the Felling Wedge tool!',
+      'When a tree leans AWAY from your drop zone, the back cut alone won’t tip it—switch to the Wedge tool!',
       'Click the back-cut slot 2–3 times with the Wedge tool to drive wedges in and force the tree safely forward.',
     ],
     basePayout: 1380,
@@ -350,7 +350,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     id: 'c8-cascadia-master',
     index: 8,
     title: 'Cascadia Old-Growth Finale',
-    subtitle: 'Old-Growth Timber Ridge · Master Arborist Test',
+    subtitle: 'Old Forest Ridge · Master Arborist Test',
     site: 'timber_ridge',
     weather: 'coastal_gale',
     difficulty: 5,
@@ -1028,6 +1028,61 @@ export const CAMPAIGN_CONTRACTS: ContractSpec[] = [...CAMPAIGN_CONTRACTS_UNSORTE
   )
   .map((c, i) => ({ ...c, index: i + 1 }));
 
+/** First campaign job at each difficulty tier — finishing it raises arborist level to that tier. */
+export const LEVEL_GATE_CONTRACT_IDS: Record<number, string> = (() => {
+  const gates: Record<number, string> = {};
+  for (const c of CAMPAIGN_CONTRACTS) {
+    if (gates[c.difficulty] === undefined) gates[c.difficulty] = c.id;
+  }
+  return gates;
+})();
+
+export type CampaignCompletionMap = Record<string, { stars: number; score: number; earnings: number }>;
+
+export function derivePlayerLevel(
+  completed: CampaignCompletionMap,
+  savedLevel: number | undefined = undefined
+): number {
+  let derived = 1;
+  for (let d = 1; d <= 5; d++) {
+    const gateId = LEVEL_GATE_CONTRACT_IDS[d];
+    if (gateId && completed[gateId]) derived = Math.max(derived, d);
+  }
+  if (savedLevel !== undefined) return Math.max(derived, savedLevel, 1);
+  return Math.max(derived, 1);
+}
+
+export function isCampaignJobUnlocked(contract: ContractSpec, playerLevel: number): boolean {
+  if (contract.difficulty <= playerLevel) return true;
+  const previewId = LEVEL_GATE_CONTRACT_IDS[playerLevel + 1];
+  return previewId !== undefined && contract.id === previewId;
+}
+
+export function getLevelGateJob(difficulty: number): ContractSpec | undefined {
+  const id = LEVEL_GATE_CONTRACT_IDS[difficulty];
+  return id ? CAMPAIGN_CONTRACTS.find((c) => c.id === id) : undefined;
+}
+
+/** Next playable campaign job: respects unlocks; prefers continuing forward after `afterContractId`. */
+export function findNextUnlockedJob(
+  completed: CampaignCompletionMap,
+  playerLevel: number,
+  afterContractId?: string
+): ContractSpec | undefined {
+  let started = afterContractId === undefined;
+  for (const c of CAMPAIGN_CONTRACTS) {
+    if (!started) {
+      if (c.id === afterContractId) started = true;
+      continue;
+    }
+    if (isCampaignJobUnlocked(c, playerLevel) && !completed[c.id]) return c;
+  }
+  for (const c of CAMPAIGN_CONTRACTS) {
+    if (isCampaignJobUnlocked(c, playerLevel) && !completed[c.id]) return c;
+  }
+  return undefined;
+}
+
 /** Default Free Cut site, weather, and wind tuned to each species' native / campaign habitat. */
 export function getSandboxEnvForSpecies(species: SpeciesId): {
   site: SiteId;
@@ -1100,8 +1155,8 @@ export function createSandboxContract(opts: {
   return {
     id: `sandbox-${opts.species}-${seed}`,
     index: 0,
-    title: 'Free-Cut Sandbox',
-    subtitle: 'Practice Pruning, Directional Felling, Wedges & Bucking',
+    title: 'Free Cut',
+    subtitle: 'Practice pruning, felling, wedges & bucking',
     site: opts.site,
     weather: opts.weather,
     difficulty: 2,
@@ -1109,7 +1164,7 @@ export function createSandboxContract(opts: {
     windAngle: 0.7,
     unlockedTools: ['prune', 'fell', 'wedge', 'buck'],
     briefing:
-      'Practice freely with all tools unlocked! Prune limbs to shift lean, experiment with face notches and wedges, drop into the target corridor, and buck the trunk.',
+      'Practice freely with all tools unlocked! Prune hazard limbs to shift lean, cut face notches and back cuts, use wedges, aim the drop zone, and buck sawlogs.',
     tips: [
       'Switch tools anytime along the bottom dock.',
       'Right-click drag to orbit, scroll to zoom.',

@@ -8,7 +8,13 @@ import {
   ToolId,
   TreeRuntime,
 } from '../types';
-import { CAMPAIGN_CONTRACTS } from '../data/contracts';
+import {
+  CAMPAIGN_CONTRACTS,
+  derivePlayerLevel,
+  findNextUnlockedJob,
+  isCampaignJobUnlocked,
+  LEVEL_GATE_CONTRACT_IDS,
+} from '../data/contracts';
 import { AudioEngine } from '../audio/AudioEngine';
 import { buildEnvironment, BuiltEnvironment } from '../graphics/EnvironmentBuilder';
 import { buildTreeRuntime, recomputeTreeLean, syncTrunkCutVisuals } from '../graphics/TreeGenerator';
@@ -28,6 +34,7 @@ const STORAGE_KEY = 'canopy3d_save_v1';
 interface SavedProgress {
   completedContracts: Record<string, { stars: number; score: number; earnings: number }>;
   totalEarnings: number;
+  playerLevel?: number;
 }
 
 export class GameEngine {
@@ -44,6 +51,7 @@ export class GameEngine {
   private currentContract: ContractSpec | null = null;
 
   private screen: GameHUDState['screen'] = 'title';
+  private overlayBackScreen: GameHUDState['screen'] = 'title';
   private activeTool: ToolId = 'prune';
   private activeTreeId: string | null = null;
 
@@ -103,6 +111,8 @@ export class GameEngine {
   // Persistent progression
   private completedContracts: Record<string, { stars: number; score: number; earnings: number }> = {};
   private totalEarnings = 0;
+  private playerLevel = 1;
+  private gameplayPaused = false;
   private debriefData: GameHUDState['debrief'] = undefined;
   private contractFinished = false;
   private completionDelay = 0;
@@ -229,6 +239,7 @@ export class GameEngine {
       const parsed = JSON.parse(raw) as SavedProgress;
       this.completedContracts = parsed.completedContracts ?? {};
       this.totalEarnings = parsed.totalEarnings ?? 0;
+      this.playerLevel = derivePlayerLevel(this.completedContracts, parsed.playerLevel);
     } catch {
       // ignore
     }
@@ -239,6 +250,7 @@ export class GameEngine {
       const data: SavedProgress = {
         completedContracts: this.completedContracts,
         totalEarnings: this.totalEarnings,
+        playerLevel: this.playerLevel,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch {
@@ -298,6 +310,10 @@ export class GameEngine {
     this.audio.setChainsawSelected(false);
     this.audio.stopTreeFallSound();
     this.cameraCtrl.cancelIntro(false);
+    if (screen === 'contracts' || screen === 'sandbox') {
+      this.overlayBackScreen =
+        this.screen === 'playing' && this.currentContract ? 'playing' : 'title';
+    }
     this.screen = screen;
     if (screen === 'title') {
       this.cameraCtrl.setAutoRotate(0.08);
@@ -305,7 +321,52 @@ export class GameEngine {
     this.emitHUD();
   }
 
+  public goBackFromContracts(): void {
+    this.goBackFromOverlay();
+  }
+
+  public goBackFromSandbox(): void {
+    this.goBackFromOverlay();
+  }
+
+  private goBackFromOverlay(): void {
+    if (this.overlayBackScreen === 'playing' && this.currentContract) {
+      this.audio.init();
+      this.audio.playClick();
+      this.screen = 'playing';
+      this.cameraCtrl.setAutoRotate(0);
+      this.emitHUD();
+      return;
+    }
+    this.openScreen('title');
+  }
+
+  /** Leave the current session and return to the title diorama. */
+  public goHome(): void {
+    this.audio.init();
+    this.audio.playClick();
+    this.audio.setSawActive('none');
+    this.audio.setChainsawSelected(false);
+    this.audio.stopTreeFallSound();
+    if (this.screen === 'playing' || this.screen === 'debrief') {
+      this.clearCurrentScene();
+      this.loadDioramaScene();
+      this.currentContract = null;
+      this.activeTreeId = null;
+      this.contractFinished = false;
+      this.debriefData = undefined;
+    }
+    this.screen = 'title';
+    this.cameraCtrl.setAutoRotate(0.08);
+    this.emitHUD();
+  }
+
   public startContract(contract: ContractSpec): void {
+    if (!contract.isSandbox && !isCampaignJobUnlocked(contract, this.playerLevel)) {
+      this.audio.init();
+      this.showToast('This job is locked — finish the level-up job on the Job Board first!', 'warn');
+      return;
+    }
     this.audio.init();
     this.audio.playClick();
     this.clearCurrentScene();
@@ -351,9 +412,13 @@ export class GameEngine {
 
   public startNextContract(): void {
     if (!this.currentContract) return;
-    const idx = CAMPAIGN_CONTRACTS.findIndex((c) => c.id === this.currentContract?.id);
-    if (idx >= 0 && idx + 1 < CAMPAIGN_CONTRACTS.length) {
-      this.startContract(CAMPAIGN_CONTRACTS[idx + 1]);
+    const next = findNextUnlockedJob(
+      this.completedContracts,
+      this.playerLevel,
+      this.currentContract.isSandbox ? undefined : this.currentContract.id
+    );
+    if (next) {
+      this.startContract(next);
     } else {
       this.openScreen('contracts');
     }
@@ -425,6 +490,32 @@ export class GameEngine {
     this.audio.init();
     this.audio.toggleMute();
     this.emitHUD();
+  }
+
+  public setGameplayPaused(paused: boolean): void {
+    if (this.gameplayPaused === paused) return;
+    this.gameplayPaused = paused;
+    if (paused) {
+      this.audio.setSawActive('none');
+    }
+    this.cameraCtrl.setKeyboardEnabled(this.screen === 'playing' && !paused);
+  }
+
+  public resetPlayerProgress(): void {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    this.completedContracts = {};
+    this.totalEarnings = 0;
+    this.playerLevel = 1;
+    this.currentContract = null;
+    this.contractFinished = false;
+    this.debriefData = undefined;
+    this.clearCurrentScene();
+    this.loadDioramaScene();
+    this.openScreen('title');
   }
 
   private getActiveTree(): TreeRuntime | null {
@@ -1823,10 +1914,10 @@ export class GameEngine {
       this.showToast(`Impact! Damaged: ${hitHazards.join(', ')}`, 'danger');
       this.audio.playWarningBuzz();
     } else if (tree.landedInDropZone) {
-      this.showToast('Bullseye Drop! Right in the landing corridor!', 'good');
+      this.showToast('Bullseye drop! Right in the drop zone!', 'good');
       this.audio.playSuccessChime();
     } else {
-      this.showToast('Safe drop—zero property damage, slightly off target corridor.', 'info');
+      this.showToast('Safe drop—nothing hit, but a bit outside the drop zone.', 'info');
     }
 
     // If bucking is required on this tree, prompt & enable bucking
@@ -1928,7 +2019,7 @@ export class GameEngine {
       if (t.prunedHealthyPenaltyCount > 0) {
         accuracyPoints -= t.prunedHealthyPenaltyCount * 10;
         safetyBonus = Math.max(0, safetyBonus - t.prunedHealthyPenaltyCount * 35);
-        penalties.push(`Cut ${t.prunedHealthyPenaltyCount} healthy structural branch(es)`);
+        penalties.push(`Cut ${t.prunedHealthyPenaltyCount} healthy branch(es) (not hazard limbs)`);
       }
 
       // Felling evaluation
@@ -1939,10 +2030,10 @@ export class GameEngine {
           safetyBonus = 0;
           penalties.push(`${t.speciesSpec.name} struck: ${t.hitHazards.join(', ')}`);
         } else if (t.landedInDropZone) {
-          highlights.push(`Pinpoint drop into ${t.spec.dropZone?.label ?? 'Drop Zone'} (${t.speciesSpec.name})`);
+          highlights.push(`Pinpoint drop into ${t.spec.dropZone?.label ?? 'drop zone'} (${t.speciesSpec.name})`);
         } else {
           accuracyPoints -= 18;
-          penalties.push(`${t.speciesSpec.name} landed outside preferred corridor`);
+          penalties.push(`${t.speciesSpec.name} landed outside the drop zone`);
         }
 
         if (t.hingeIntegrity > 0.75) {
@@ -1989,10 +2080,26 @@ export class GameEngine {
         };
       }
       this.totalEarnings += totalEarned;
+
+      const gateId = LEVEL_GATE_CONTRACT_IDS[contract.difficulty];
+      if (gateId && contract.id === gateId && this.completedContracts[contract.id]) {
+        const newLevel = Math.max(this.playerLevel, contract.difficulty);
+        if (newLevel > this.playerLevel) {
+          this.playerLevel = newLevel;
+          highlights.push(
+            `Arborist Level ${newLevel} — all Level ${newLevel} jobs unlocked on the Job Board!`
+          );
+        }
+      }
+
       this.saveProgress();
     }
 
-    const idx = CAMPAIGN_CONTRACTS.findIndex((c) => c.id === contract.id);
+    const nextUnlocked = findNextUnlockedJob(
+      this.completedContracts,
+      this.playerLevel,
+      contract.isSandbox ? undefined : contract.id
+    );
     this.debriefData = {
       success,
       stars,
@@ -2002,7 +2109,7 @@ export class GameEngine {
       totalEarned,
       penalties,
       highlights,
-      hasNextContract: !contract.isSandbox && idx >= 0 && idx + 1 < CAMPAIGN_CONTRACTS.length,
+      hasNextContract: !contract.isSandbox && nextUnlocked !== undefined,
     };
 
     this.screen = 'debrief';
@@ -2126,7 +2233,7 @@ export class GameEngine {
             }
           } else {
             tree.prunedHealthyPenaltyCount++;
-            this.showToast('Oops — that was a healthy structural branch! Stick to amber-flagged limbs.', 'warn');
+            this.showToast('Oops — healthy branch! Prune only hazard limbs with amber flags.', 'warn');
             this.audio.playWarningBuzz();
           }
         }
@@ -2250,7 +2357,7 @@ export class GameEngine {
             this.audio.setSawActive('none');
             if (this.cursorProgressCb) this.cursorProgressCb(false, 0, 0, 0, '', '');
             if (hasWedge) {
-              this.showToast('Tree sits back on the saw! Switch to Felling Wedge & tap to tip it forward!', 'warn');
+              this.showToast('Tree sits back on the saw! Switch to the Wedge tool and tap to tip it forward!', 'warn');
             } else {
               this.showToast('Tree leans back! Prune back-side limbs first, or hold Left-Click to push through.', 'warn');
             }
@@ -2863,7 +2970,7 @@ export class GameEngine {
       } else if (this.activeTool === 'prune') {
         const rem = Math.max(0, tree.spec.hazardBranches - tree.prunedTargetCount);
         if (rem > 0) {
-          promptText = `Hover an amber-flagged limb & hold Left-Click to prune (${rem} left)`;
+          promptText = `Hover a hazard limb (amber flag) & hold Left-Click to prune (${rem} left)`;
         } else if (tree.spec.task === 'prune_and_fell') {
           promptText = 'All hazard limbs cleared! Select the Chainsaw to fell this tree.';
         } else {
@@ -2889,16 +2996,16 @@ export class GameEngine {
         } else if (tree.stage === 'hinge_ready') {
           const hasWedge = contract.unlockedTools.includes('wedge');
           promptText = hasWedge
-            ? 'Back-leaning! Select the Felling Wedge & click the trunk to tip it forward!'
-            : 'Back-leaning! Prune opposite-side limbs with Prune Saw, or hold Left-Click to push through.';
+            ? 'Back-leaning! Select the Wedge tool and tap the trunk to tip it forward!'
+            : 'Back-leaning! Prune opposite-side boughs with the Prune Saw, or hold Left-Click to push through.';
         } else if (tree.stage === 'falling') {
           promptText = 'TIMBER!!';
         } else {
-          promptText = 'Tree felled! Switch to Bucking Saw or select the next standing tree.';
+          promptText = 'Tree felled! Switch to Limb & Buck or select the next standing tree.';
         }
       } else if (this.activeTool === 'wedge') {
         if (tree.stage === 'hinge_ready' || tree.stage === 'notched') {
-          promptText = 'Left-Click the trunk to drive Felling Wedges into the back cut!';
+          promptText = 'Left-Click the trunk to drive wedges into the back cut!';
         } else {
           promptText = 'Cut the Face Notch and Back Cut with the Chainsaw first.';
         }
@@ -3064,6 +3171,7 @@ export class GameEngine {
       cameraAngleDeg: this.cameraCtrl.getAzimuthDeg(),
       completedContracts: this.completedContracts,
       totalEarnings: this.totalEarnings,
+      playerLevel: this.playerLevel,
       debrief: this.debriefData,
       toast: this.elapsed < this.toastExpireAt ? this.currentToast : undefined,
     };
@@ -3075,13 +3183,17 @@ export class GameEngine {
 
   private loop = (): void => {
     this.animFrameId = requestAnimationFrame(this.loop);
-    const dt = Math.min(0.05, this.clock.getDelta());
+    let dt = Math.min(0.05, this.clock.getDelta());
+    if (this.screen === 'playing' && this.gameplayPaused) {
+      dt = 0;
+    }
     this.elapsed += dt;
 
-    this.cameraCtrl.setKeyboardEnabled(this.screen === 'playing');
+    this.cameraCtrl.setKeyboardEnabled(this.screen === 'playing' && !this.gameplayPaused);
     this.cameraCtrl.update(dt);
     const chainsawIdling =
       this.screen === 'playing' &&
+      !this.gameplayPaused &&
       (this.activeTool === 'fell' || this.activeTool === 'buck') &&
       !this.cameraCtrl.isIntroPlaying() &&
       !this.contractFinished;
@@ -3092,7 +3204,7 @@ export class GameEngine {
     this.updatePlayableTreeOcclusion(this.camera.position, camTarget, dt);
     this.updateSceneStructureOcclusion(this.camera.position, camTarget, dt);
 
-    if (this.screen === 'playing') {
+    if (this.screen === 'playing' && !this.gameplayPaused) {
       this.updateCutting(dt);
       this.updateWedgeAnimation(dt);
       this.updateFallingPhysics(dt);

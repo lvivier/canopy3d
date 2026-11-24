@@ -38,6 +38,14 @@ body,
   height: 100%;
   display: block;
   touch-action: none;
+  transition:
+    filter 0.28s ease,
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#app.game-paused #game-canvas {
+  filter: brightness(0.58) saturate(0.88) blur(2.5px);
+  transform: translateY(var(--hud-menu-offset, 0px));
 }
 
 #ui-root {
@@ -303,8 +311,21 @@ body,
 
 .panel-header-right {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.level-badge {
+  background: rgba(251, 191, 36, 0.14);
+  border: 1px solid rgba(251, 191, 36, 0.38);
+  color: #fcd34d;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
 }
 
 .earnings-badge {
@@ -343,6 +364,26 @@ body,
 
 .contract-card.completed {
   border-color: rgba(52, 211, 153, 0.35);
+}
+
+.contract-card.locked {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.contract-card.locked:hover {
+  transform: none;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.contract-card.preview {
+  border-color: rgba(251, 191, 36, 0.45);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12);
+}
+
+.contract-card.preview .contract-go {
+  color: #fcd34d;
 }
 
 .contract-top {
@@ -711,29 +752,195 @@ body,
   border-color: rgba(110, 231, 183, 0.45);
 }
 
-.hud-menu-wrap {
-  position: relative;
+.hud-playfield {
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.hud-menu-popover {
-  position: absolute;
-  top: calc(100% + 6px);
+.hud-layer.hud-menu-open .hud-playfield {
+  transform: translateY(var(--hud-menu-offset, 0px));
+  pointer-events: none;
+}
+
+.hud-menu-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
   right: 0;
-  min-width: 168px;
-  padding: 6px;
-  border-radius: 12px;
+  z-index: 55;
+  pointer-events: auto;
   background: var(--bg-glass-strong);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-glass);
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--border-glass);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
 }
 
-.hud-menu-popover[hidden] {
+.hud-menu-bar[hidden] {
   display: none;
+}
+
+.hud-menu-bar-inner {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 14px 56px 16px 16px;
+  padding-top: max(14px, env(safe-area-inset-top));
+}
+
+.hud-menu-bar-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.hud-menu-game-title {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: clamp(1.28rem, 3.6vw, 1.72rem);
+  margin-bottom: 0;
+  color: var(--text-main);
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.hud-menu-game-title:hover {
+  opacity: 0.9;
+}
+
+.hud-menu-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+}
+
+.hud-menu-backdrop {
+  position: fixed;
+  top: var(--hud-menu-offset, 0px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  pointer-events: auto;
+  background: rgba(8, 14, 11, 0.42);
+  backdrop-filter: blur(5px);
+}
+
+.hud-menu-backdrop[hidden] {
+  display: none;
+}
+
+.hud-menu-tabs {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.22);
+  min-width: 0;
+}
+
+.hud-menu-tab {
+  flex: 1;
+  border: none;
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.hud-menu-tab:hover {
+  color: var(--text-main);
+}
+
+.hud-menu-tab.active {
+  color: #ecfdf5;
+  background: rgba(52, 211, 153, 0.22);
+}
+
+.hud-menu-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+.hud-menu-panel[hidden] {
+  display: none;
+}
+
+.hud-confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: auto;
+}
+
+.hud-confirm-modal[hidden] {
+  display: none;
+}
+
+.hud-confirm-scrim {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(6px);
+  cursor: default;
+}
+
+.hud-confirm-card {
+  position: relative;
+  width: min(100%, 400px);
+  padding: 22px 24px;
+  border-radius: 18px;
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--border-glass);
+  box-shadow: 0 24px 56px rgba(0, 0, 0, 0.5);
+}
+
+.hud-confirm-title {
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  margin-bottom: 10px;
+}
+
+.hud-confirm-body {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin-bottom: 18px;
+}
+
+.hud-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hud-confirm-danger {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  border-color: rgba(252, 165, 165, 0.45);
+  color: #fff;
+}
+
+.hud-confirm-danger:hover {
+  background: linear-gradient(135deg, #f87171, #ef4444);
 }
 
 .hud-menu-item {
@@ -753,6 +960,14 @@ body,
 
 .hud-menu-item:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.hud-menu-item-danger {
+  color: #fecaca;
+}
+
+.hud-menu-item-danger:hover {
+  background: rgba(248, 113, 113, 0.16);
 }
 
 .species-hud-card {
@@ -803,11 +1018,25 @@ body,
 }
 
 .lean-row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 14px;
+  align-items: baseline;
   font-size: 0.73rem;
   font-weight: 600;
   margin-bottom: 5px;
+}
+
+.lean-row .lean-label {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.lean-row .lean-value {
+  text-align: right;
+  line-height: 1.35;
+  min-width: 0;
 }
 
 .lean-bar-track {
@@ -1313,6 +1542,23 @@ body,
   .hud-top-right {
     top: 10px;
     right: 10px;
+  }
+
+  .hud-menu-close {
+    top: 10px;
+    right: 10px;
+  }
+
+  .hud-menu-bar-inner {
+    padding-right: 52px;
+  }
+
+  .hud-menu-bar-head .hud-menu-tabs {
+    flex: 1 1 100%;
+  }
+
+  .hud-menu-panel {
+    grid-template-columns: 1fr;
   }
 
   .hud-toolbar {
