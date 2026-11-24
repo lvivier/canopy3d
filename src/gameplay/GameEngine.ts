@@ -1905,9 +1905,9 @@ export class GameEngine {
       tree.landedInDropZone = hitHazards.length === 0;
     }
 
-    // Show bucking rings on fallen trunk!
+    const showBuckRings = Boolean(tree.spec.requireBucking) && contract.unlockedTools.includes('buck');
     for (const r of tree.buckRings) {
-      r.ringMesh.visible = true;
+      r.ringMesh.visible = showBuckRings;
     }
 
     if (hitHazards.length > 0) {
@@ -3000,8 +3000,17 @@ export class GameEngine {
             : 'Back-leaning! Prune opposite-side boughs with the Prune Saw, or hold Left-Click to push through.';
         } else if (tree.stage === 'falling') {
           promptText = 'TIMBER!!';
-        } else {
+        } else if (
+          tree.stage === 'fallen' &&
+          tree.spec.requireBucking &&
+          contract.unlockedTools.includes('buck') &&
+          tree.buckedCount < tree.totalBuckCuts
+        ) {
           promptText = 'Tree felled! Switch to Limb & Buck or select the next standing tree.';
+        } else if (tree.stage === 'fallen' || tree.stage === 'bucked') {
+          promptText = 'Tree felled! Select the next standing tree.';
+        } else {
+          promptText = 'Tree felled!';
         }
       } else if (this.activeTool === 'wedge') {
         if (tree.stage === 'hinge_ready' || tree.stage === 'notched') {
