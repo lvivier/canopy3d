@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { GraphicsQuality, SiteId, WeatherId } from '../types';
+import { GraphicsQuality, SiteId, SpeciesId, WeatherId } from '../types';
+import { getFoliageParticleSprite } from '../graphics/FoliageCardBuilder';
 
 interface DynamicParticle {
   mesh: THREE.Mesh;
@@ -67,6 +68,15 @@ interface FallingTopSection {
   age: number;
   foliageColors: string[];
   woodColor: string;
+  foliage?: FoliageBurstSpecies;
+}
+
+/** Species identity for leaf cards thrown off a cut limb or fallen crown. */
+export interface FoliageBurstSpecies {
+  id: SpeciesId;
+  category: 'conifer' | 'deciduous';
+  /** Brown deadwood sprig instead of the living leaf. */
+  deadwood?: boolean;
 }
 
 export class ParticleSystem {
@@ -86,6 +96,9 @@ export class ParticleSystem {
   private quality: GraphicsQuality = 'high';
   private chipGeo = new THREE.BoxGeometry(0.11, 0.05, 0.08);
   private leafGeo = new THREE.ConeGeometry(0.16, 0.28, 4);
+  /** Portrait card matching the sprig atlas. Shared by every leaf particle. */
+  private leafCardGeo = new THREE.PlaneGeometry(0.78, 1.18);
+  private leafSpriteMats = new Map<string, THREE.MeshStandardMaterial>();
 
   // GPU-instanced procedural FBM shader dust plumes (single draw call!)
   private dustCloudMesh: THREE.Mesh;
@@ -570,6 +583,7 @@ export class ParticleSystem {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
+        uWind: { value: new THREE.Vector2(0.18, 0) },
         uColor: { value: new THREE.Color('#fff6dc') },
         uSunColor: { value: new THREE.Color('#fff1cc') },
         uOpacity: { value: 0.44 },
@@ -581,13 +595,23 @@ export class ParticleSystem {
       depthWrite: false,
       vertexShader: /* glsl */ `
         attribute vec4 aSeed;
+        uniform float uTime;
+        uniform vec2 uWind;
         uniform float uSizeScale;
         varying vec4 vSeed;
         varying float vCamDist;
         varying float vWorldY;
 
         void main() {
-          vec4 wPos = modelMatrix * vec4(position, 1.0);
+          vec3 p = position;
+          float phase = aSeed.x * 6.2831853;
+          p.x += uWind.x * uTime - cos(uTime * 0.45 + phase) * 0.5333;
+          p.y += uTime * 0.03 + sin(uTime * 0.55 + phase * 1.3) * 0.2909;
+          p.z += uWind.y * uTime + sin(uTime * 0.41 + phase * 0.85) * 0.5854;
+          p.x = mod(p.x + 22.0, 44.0) - 22.0;
+          p.z = mod(p.z + 22.0, 44.0) - 22.0;
+          p.y = mod(p.y - 0.5, 19.0) + 0.5;
+          vec4 wPos = modelMatrix * vec4(p, 1.0);
           vec4 mvPos = viewMatrix * wPos;
           vCamDist = max(0.5, -mvPos.z);
           vWorldY = wPos.y;
@@ -686,12 +710,42 @@ export class ParticleSystem {
     }
   }
 
-  public spawnFoliageBurst(pos: THREE.Vector3, colors: string[], count = 14): void {
+  private leafMaterialFor(species: FoliageBurstSpecies): THREE.MeshStandardMaterial | null {
+    const key = `${species.id}|${species.category}|${species.deadwood ? 'dead' : 'live'}|${this.quality}`;
+    const cached = this.leafSpriteMats.get(key);
+    if (cached) return cached;
+    const sprite = getFoliageParticleSprite(species.id, this.quality, {
+      deadwood: species.deadwood,
+      category: species.category,
+    });
+    if (!sprite) return null;
+    const mat = new THREE.MeshStandardMaterial({
+      map: sprite.map,
+      color: '#ffffff',
+      alphaTest: sprite.alphaTest,
+      side: THREE.DoubleSide,
+      roughness: 0.74,
+      metalness: 0,
+    });
+    this.leafSpriteMats.set(key, mat);
+    return mat;
+  }
+
+  public spawnFoliageBurst(
+    pos: THREE.Vector3,
+    colors: string[],
+    count = 14,
+    species?: FoliageBurstSpecies
+  ): void {
+    const leafMat = species ? this.leafMaterialFor(species) : null;
     for (let i = 0; i < count; i++) {
+      const useLeaf = Boolean(leafMat);
       const c = colors[Math.floor(Math.random() * colors.length)];
       const m = new THREE.Mesh(
-        this.leafGeo,
-        new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true })
+        useLeaf ? this.leafCardGeo : this.leafGeo,
+        useLeaf
+          ? leafMat!
+          : new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true })
       );
       m.position.copy(pos).add(
         new THREE.Vector3(
@@ -700,23 +754,32 @@ export class ParticleSystem {
           (Math.random() - 0.5) * 1.8
         )
       );
-      const s = 0.8 + Math.random() * 1.1;
+      m.rotation.set(Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2);
+      const s = useLeaf ? 0.42 + Math.random() * 0.72 : 0.8 + Math.random() * 1.1;
       m.scale.setScalar(s);
+      m.castShadow = false;
+      m.receiveShadow = false;
       this.scene.add(m);
       this.particles.push({
         mesh: m,
         vel: new THREE.Vector3(
-          (Math.random() - 0.5) * 4.5,
-          1.2 + Math.random() * 3.0,
-          (Math.random() - 0.5) * 4.5
+          (Math.random() - 0.5) * (useLeaf ? 3.4 : 4.5),
+          (useLeaf ? 0.8 : 1.2) + Math.random() * (useLeaf ? 2.2 : 3.0),
+          (Math.random() - 0.5) * (useLeaf ? 3.4 : 4.5)
         ),
-        rotVel: new THREE.Vector3(Math.random() * 7, Math.random() * 7, Math.random() * 7),
+        rotVel: useLeaf
+          ? new THREE.Vector3(
+              (Math.random() - 0.5) * 3.2,
+              (Math.random() - 0.5) * 2.4,
+              (Math.random() - 0.5) * 4.5
+            )
+          : new THREE.Vector3(Math.random() * 7, Math.random() * 7, Math.random() * 7),
         age: 0,
-        life: 1.4 + Math.random() * 1.2,
-        gravity: 3.1,
-        drag: 0.94,
+        life: (useLeaf ? 1.7 : 1.4) + Math.random() * (useLeaf ? 1.5 : 1.2),
+        gravity: useLeaf ? 2.2 : 3.1,
+        drag: useLeaf ? 0.9 : 0.94,
         startScale: s,
-        endScale: 0.25,
+        endScale: useLeaf ? s * 0.55 : 0.25,
       });
     }
   }
@@ -725,7 +788,8 @@ export class ParticleSystem {
     basePos: THREE.Vector3,
     fallAngle: number,
     treeHeight: number,
-    foliageColors: string[]
+    foliageColors: string[],
+    species?: FoliageBurstSpecies
   ): void {
     const dx = Math.cos(fallAngle);
     const dz = Math.sin(fallAngle);
@@ -814,7 +878,7 @@ export class ParticleSystem {
       }
 
       if (isCrownZone) {
-        this.spawnFoliageBurst(p.clone().add(new THREE.Vector3(0, 1.0, 0)), foliageColors, 4);
+        this.spawnFoliageBurst(p.clone().add(new THREE.Vector3(0, 1.0, 0)), foliageColors, 4, species);
       }
     }
 
@@ -879,7 +943,12 @@ export class ParticleSystem {
    * Remove a cut limb from the world and replace it with a short burst of
    * leaves and chips so forestry scenes don't fill up with leftover sticks.
    */
-  public dissolveLimb(branchGroup: THREE.Object3D, foliageColors: string[], woodColor: string): void {
+  public dissolveLimb(
+    branchGroup: THREE.Object3D,
+    foliageColors: string[],
+    woodColor: string,
+    species?: FoliageBurstSpecies
+  ): void {
     branchGroup.updateWorldMatrix(true, true);
     const box = new THREE.Box3().setFromObject(branchGroup);
     const center = box.getCenter(new THREE.Vector3());
@@ -890,7 +959,7 @@ export class ParticleSystem {
     this.scene.remove(branchGroup);
 
     const leafCount = Math.min(26, 8 + Math.round(span * 2.4));
-    this.spawnFoliageBurst(center, foliageColors, leafCount);
+    this.spawnFoliageBurst(center, foliageColors, leafCount, species);
     this.spawnSawdust(center, new THREE.Vector3(0, 1, 0), woodColor, Math.min(14, 5 + Math.round(span)));
 
     const puff = Math.max(3, Math.min(6, Math.round(span)));
@@ -900,7 +969,7 @@ export class ParticleSystem {
         THREE.MathUtils.lerp(box.min.y, box.max.y, Math.random()),
         THREE.MathUtils.lerp(box.min.z, box.max.z, Math.random())
       );
-      this.spawnFoliageBurst(p, foliageColors, 3);
+      this.spawnFoliageBurst(p, foliageColors, 3, species);
       this.spawnSawdust(p, new THREE.Vector3((Math.random() - 0.5), 1, (Math.random() - 0.5)), woodColor, 2);
     }
   }
@@ -914,7 +983,8 @@ export class ParticleSystem {
     cutWorldPos: THREE.Vector3,
     tipDir: THREE.Vector3,
     foliageColors: string[],
-    woodColor: string
+    woodColor: string,
+    foliage?: FoliageBurstSpecies
   ): void {
     if (segmentGroups.length === 0) return;
 
@@ -943,6 +1013,7 @@ export class ParticleSystem {
       age: 0,
       foliageColors,
       woodColor,
+      foliage,
     });
   }
 
@@ -1050,25 +1121,13 @@ export class ParticleSystem {
   }
 
   public update(dt: number, elapsed: number, windSpeed: number, windAngle: number): void {
-    // Ambient drifting forest dust & pollen motes (soft sunlit bokeh with swirling thermal eddies)
+    // Ambient pollen drifts in the vertex shader from a static spawn buffer.
     this.ambientMoteMat.uniforms.uTime.value = elapsed;
-    const pos = this.ambientMotes.geometry.attributes.position as THREE.BufferAttribute;
-    const wx = Math.cos(windAngle) * (0.18 + windSpeed * 1.25);
-    const wz = Math.sin(windAngle) * (0.18 + windSpeed * 1.25);
-    for (let i = 0; i < pos.count; i++) {
-      const fi = i * 1.37;
-      let x = pos.getX(i) + (wx + Math.sin(elapsed * 0.45 + fi) * 0.24) * dt;
-      let y = pos.getY(i) + (Math.cos(elapsed * 0.55 + fi * 1.3) * 0.16 + 0.03) * dt;
-      let z = pos.getZ(i) + (wz + Math.cos(elapsed * 0.41 + fi * 0.85) * 0.24) * dt;
-      if (x > 22) x -= 44;
-      else if (x < -22) x += 44;
-      if (z > 22) z -= 44;
-      else if (z < -22) z += 44;
-      if (y > 19.5) y = 0.8 + (i % 7) * 0.35;
-      else if (y < 0.5) y = 16.5;
-      pos.setXYZ(i, x, y, z);
-    }
-    pos.needsUpdate = true;
+    const push = 0.18 + windSpeed * 1.25;
+    (this.ambientMoteMat.uniforms.uWind.value as THREE.Vector2).set(
+      Math.cos(windAngle) * push,
+      Math.sin(windAngle) * push
+    );
 
     // Fine slanted light-rain streaks reacting to wind speed & direction
     if (this.weather === 'light_rain' && this.rainLines.visible) {
@@ -1296,7 +1355,7 @@ export class ParticleSystem {
 
       if (fts.pivot.position.y <= 1.6 || fts.age >= 0.95) {
         this.spawnSmallDustPuff(fts.pivot.position, 2.1);
-        this.dissolveLimb(fts.pivot, fts.foliageColors, fts.woodColor);
+        this.dissolveLimb(fts.pivot, fts.foliageColors, fts.woodColor, fts.foliage);
         this.fallingTopSections.splice(i, 1);
       }
     }

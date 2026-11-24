@@ -196,6 +196,8 @@ export interface BranchData {
   meshGroup: THREE.Group;
   colliderMesh: THREE.Mesh;
   collarRing: THREE.Mesh;
+  /** Amber forestry ribbon on a hazard limb. Shown only while this tree is selected. */
+  hazardFlag?: THREE.Group;
   attachLocalPos: THREE.Vector3;
   worldDirection: THREE.Vector3;
   radius: number;

@@ -94,6 +94,16 @@ export class GameEngine {
   private _occBox = new THREE.Box3();
   private _occCenter = new THREE.Vector3();
   private _occSize = new THREE.Vector3();
+  private _boundsInv = new THREE.Matrix4();
+  private _fallAxis = new THREE.Vector3();
+  private treeOcclusionBounds = new WeakMap<
+    TreeRuntime,
+    { local: THREE.Box3; world: THREE.Box3; height: number; stage: TreeRuntime['stage'] }
+  >();
+  private scratchObstructingIds = new Set<string>();
+  private scratchBlockedRingIds = new Set<string>();
+  private shadowLight: THREE.DirectionalLight | null = null;
+  private shadowRefreshAccum = 1;
 
   // 3D Diegetic Visual Guides
   private aimGuideGroup: THREE.Group;
@@ -809,6 +819,54 @@ export class GameEngine {
   }
 
   /**
+   * World AABB of a playable crown. The local box is captured once per height/stage
+   * and then transformed by trunkPivot, instead of walking every limb mesh each frame.
+   */
+  private syncTreeOcclusionBox(tree: TreeRuntime): THREE.Box3 {
+    let entry = this.treeOcclusionBounds.get(tree);
+    if (!entry || entry.height !== tree.currentHeight || entry.stage !== tree.stage) {
+      tree.trunkPivot.updateWorldMatrix(true, true);
+      const worldNow = new THREE.Box3().setFromObject(tree.trunkPivot);
+      this._boundsInv.copy(tree.trunkPivot.matrixWorld).invert();
+      const local = worldNow.clone().applyMatrix4(this._boundsInv);
+      entry = { local, world: new THREE.Box3(), height: tree.currentHeight, stage: tree.stage };
+      this.treeOcclusionBounds.set(tree, entry);
+    } else {
+      tree.trunkPivot.updateWorldMatrix(true, false);
+    }
+    entry.world.copy(entry.local).applyMatrix4(tree.trunkPivot.matrixWorld);
+    return entry.world;
+  }
+
+  /**
+   * Sun shadow is a 4096 alpha-tested foliage pass. Standing sway is under two degrees,
+   * so redrawing it every frame mostly repeats the same map. Falling trees still update
+   * every frame because the crown is actually moving.
+   */
+  private refreshShadows(dt: number): void {
+    const sun = this.env?.sunLight;
+    if (!sun) return;
+    if (sun !== this.shadowLight) {
+      this.shadowLight = sun;
+      sun.shadow.autoUpdate = false;
+      sun.shadow.needsUpdate = true;
+      this.shadowRefreshAccum = 0;
+      return;
+    }
+    for (const tree of this.trees) {
+      if (tree.stage === 'falling') {
+        sun.shadow.needsUpdate = true;
+        return;
+      }
+    }
+    this.shadowRefreshAccum += dt;
+    if (this.shadowRefreshAccum >= 1 / 12) {
+      this.shadowRefreshAccum = 0;
+      sun.shadow.needsUpdate = true;
+    }
+  }
+
+  /**
    * Softly fade non-active playable trees that sit between the camera and the
    * current subject / action focus, so the working tree stays readable.
    * Fallen / bucked trees use a slightly wider footprint test (no strict height gate)
@@ -834,7 +892,8 @@ export class GameEngine {
       const minFade = isDowned ? 0.08 : 0.14;
 
       if (playing && activeId && tree.spec.id !== activeId) {
-        this._occBox.setFromObject(tree.rootGroup);
+        const worldBox = this.syncTreeOcclusionBox(tree);
+        this._occBox.copy(worldBox);
         if (!this._occBox.isEmpty()) {
           this._occBox.getCenter(this._occCenter);
           this._occBox.getSize(this._occSize);
@@ -863,26 +922,33 @@ export class GameEngine {
             );
           }
 
-          // Fade only when the sight line passes through this tree's footprint.
-          // A neighbor standing beside the subject (like the homestead alder next to the spruce) stays solid.
+          // Fade only when this tree stands between the camera and the subject and
+          // the sight line crosses its footprint. A spreading crown's box can reach
+          // past a neighbor; that background tree is not blocking the work.
           if (horizLenSq > 0.001) {
-            const { gap, t } = this.sightlineFootprintGap(
-              cameraPos.x,
-              cameraPos.z,
-              targetPos.x,
-              targetPos.z,
-              this._occBox.min.x,
-              this._occBox.max.x,
-              this._occBox.min.z,
-              this._occBox.max.z
-            );
-            const py = cameraPos.y + dy * t;
-            const heightOk = isDowned || (py >= yMin && py <= yMax);
-            if (heightOk) {
-              const softBand = isDowned ? 2.4 : 1.05;
-              if (gap < softBand) {
-                const sightFactor = THREE.MathUtils.clamp(gap / softBand, minFade, 1);
-                targetFade = Math.min(targetFade, sightFactor);
+            const along =
+              ((this._occCenter.x - cameraPos.x) * dx + (this._occCenter.z - cameraPos.z) * dz) /
+              horizLenSq;
+            const standsInFront = isDowned || (along > 0.04 && along < 0.9);
+            if (standsInFront) {
+              const { gap, t } = this.sightlineFootprintGap(
+                cameraPos.x,
+                cameraPos.z,
+                targetPos.x,
+                targetPos.z,
+                this._occBox.min.x,
+                this._occBox.max.x,
+                this._occBox.min.z,
+                this._occBox.max.z
+              );
+              const py = cameraPos.y + dy * t;
+              const heightOk = isDowned || (py >= yMin && py <= yMax);
+              if (heightOk) {
+                const softBand = isDowned ? 2.4 : 1.05;
+                if (gap < softBand) {
+                  const sightFactor = THREE.MathUtils.clamp(gap / softBand, minFade, 1);
+                  targetFade = Math.min(targetFade, sightFactor);
+                }
               }
             }
           }
@@ -920,7 +986,13 @@ export class GameEngine {
 
     for (const occ of occluders) {
       let targetFade = 1;
-      this._occBox.setFromObject(occ.rootGroup);
+      if (!occ.worldBox) {
+        occ.rootGroup.updateWorldMatrix(true, true);
+        const box = new THREE.Box3().setFromObject(occ.rootGroup);
+        if (box.isEmpty()) continue;
+        occ.worldBox = box;
+      }
+      this._occBox.copy(occ.worldBox);
       if (this._occBox.isEmpty()) continue;
 
       this._occBox.getCenter(this._occCenter);
@@ -2581,7 +2653,12 @@ export class GameEngine {
         this.particles.dissolveLimb(
           b.meshGroup,
           tree.speciesSpec.foliageColors,
-          tree.speciesSpec.sapwoodColor
+          tree.speciesSpec.sapwoodColor,
+          {
+            id: tree.speciesSpec.id,
+            category: tree.speciesSpec.category,
+            deadwood: b.reason === 'deadwood' || (b.isTarget && tree.spec.task === 'prune_only'),
+          }
         );
 
         if (isGroundLimbing) {
@@ -2854,7 +2931,8 @@ export class GameEngine {
           cutWorldPos,
           tipDir,
           tree.speciesSpec.foliageColors,
-          tree.speciesSpec.sapwoodColor
+          tree.speciesSpec.sapwoodColor,
+          { id: tree.speciesSpec.id, category: tree.speciesSpec.category }
         );
 
         // Shorten effective spar height -> aim shadow & hazard checks shrink immediately!
@@ -3013,7 +3091,8 @@ export class GameEngine {
           new THREE.Vector3(tree.spec.x, 0, tree.spec.z),
           tree.actualFallDirection,
           fallH,
-          tree.speciesSpec.foliageColors
+          tree.speciesSpec.foliageColors,
+          { id: tree.speciesSpec.id, category: tree.speciesSpec.category }
         );
         this.evaluateFallOutcome(tree);
       } else {
@@ -3027,8 +3106,8 @@ export class GameEngine {
     // Rotate trunkPivot so +Y tips directly toward (cos a, 0, sin a).
     // By right-hand rule, axis = (+Y) x (cos a, 0, sin a) = (sin a, 0, -cos a).
     const a = tree.actualFallDirection;
-    const axis = new THREE.Vector3(Math.sin(a), 0, -Math.cos(a)).normalize();
-    tree.trunkPivot.quaternion.setFromAxisAngle(axis, tree.fallAngle);
+    this._fallAxis.set(Math.sin(a), 0, -Math.cos(a)).normalize();
+    tree.trunkPivot.quaternion.setFromAxisAngle(this._fallAxis, tree.fallAngle);
   }
 
   private updateVisualGuides(dt: number): void {
@@ -3091,19 +3170,38 @@ export class GameEngine {
 
       // Branch collar ring visual feedback (standing pruning vs fallen ground limbing!)
       const isFallen = tree.stage === 'fallen';
-      const obstructingSet = isFallen
-        ? new Set(this.getFallenObstructingLimbs(tree).map((x) => x.id))
-        : null;
+      this.scratchObstructingIds.clear();
+      this.scratchBlockedRingIds.clear();
+      if (isFallen) {
+        for (const ring of tree.buckRings) {
+          if (ring.cutDone) continue;
+          const reachBase = ring.distanceAlongTrunk < 5.0 ? 1.15 : 1.85;
+          for (const limb of tree.branches) {
+            if (limb.pruned) continue;
+            const reach = limb.groundLimbOnly ? 3.2 : reachBase;
+            if (Math.abs(limb.attachLocalPos.y - ring.distanceAlongTrunk) < reach) {
+              this.scratchObstructingIds.add(limb.id);
+              this.scratchBlockedRingIds.add(ring.id);
+            }
+          }
+        }
+      }
 
       for (const b of tree.branches) {
         if (b.pruned) continue;
+        if (!isSelected) {
+          b.collarRing.visible = false;
+          if (b.hazardFlag) b.hazardFlag.visible = false;
+          continue;
+        }
+        if (b.hazardFlag) b.hazardFlag.visible = true;
         const rMat = b.collarRing.material as THREE.MeshBasicMaterial;
         const isHov = this.hoveredBranch?.id === b.id || this.cuttingBranch?.id === b.id;
 
         if (isFallen) {
           // Hide collar rings on branches riding on already-detached rolled log segments
           const onDetachedLog = b.meshGroup.parent?.parent !== tree.trunkPivot;
-          const blocksBuck = obstructingSet?.has(b.id) ?? false;
+          const blocksBuck = this.scratchObstructingIds.has(b.id);
           if (
             !onDetachedLog &&
             this.treeRequiresBuck(tree) &&
@@ -3157,9 +3255,7 @@ export class GameEngine {
             b.collarRing.scale.setScalar(1.0);
           }
         }
-        if (!isSelected && tree.occlusionFade < 0.995) {
-          rMat.opacity *= tree.occlusionFade;
-        }
+        b.collarRing.visible = rMat.opacity > 0.02;
       }
 
       // Bucking ring visual feedback (bright gold X-ray when clear so foliage/neighbors never hide it,
@@ -3167,7 +3263,7 @@ export class GameEngine {
       for (const r of tree.buckRings) {
         if (!r.ringMesh.visible || r.cutDone) continue;
         const isHov = this.hoveredBuckRing?.ring.id === r.id || this.cuttingBuck?.ring.id === r.id;
-        const blocked = isFallen && this.getObstructingLimbsForRing(tree, r).length > 0;
+        const blocked = isFallen && this.scratchBlockedRingIds.has(r.id);
         const mat = r.ringMesh.material as THREE.MeshBasicMaterial;
         if (blocked) {
           mat.color.set('#fb923c');
@@ -3607,10 +3703,6 @@ export class GameEngine {
       !this.contractFinished;
     this.audio.setChainsawSelected(chainsawIdling);
     this.audio.update(dt);
-    const camTarget = this.cameraCtrl.getTarget();
-    this.env?.updateBackgroundOcclusion(this.camera.position, camTarget, dt);
-    this.updatePlayableTreeOcclusion(this.camera.position, camTarget, dt);
-    this.updateSceneStructureOcclusion(this.camera.position, camTarget, dt);
 
     if (this.screen === 'playing' && !this.gameplayPaused) {
       this.updateCutting(dt);
@@ -3644,6 +3736,12 @@ export class GameEngine {
             : 0.04;
       this.env.waterMesh.position.y = baseWaterY + Math.sin(this.elapsed * 1.8) * 0.02;
     }
+
+    const camTarget = this.cameraCtrl.getTarget();
+    this.env?.updateBackgroundOcclusion(this.camera.position, camTarget, dt);
+    this.updatePlayableTreeOcclusion(this.camera.position, camTarget, dt);
+    this.updateSceneStructureOcclusion(this.camera.position, camTarget, dt);
+    this.refreshShadows(dt);
 
     if (this.graphicsQuality === 'high' && this.postPipeline) {
       this.postPipeline.render(this.camera);

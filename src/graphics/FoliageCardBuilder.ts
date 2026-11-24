@@ -701,6 +701,37 @@ export function isBotanicalPrototypeSpecies(speciesId: SpeciesId): boolean {
   return speciesId in SPRIG_CONFIGS;
 }
 
+/** Flowering species keep a separate leaf sprig; particles should shed leaves, not only blooms. */
+const LEAF_PARTICLE_SPRIG: Partial<Record<SpeciesId, BotanicalSprigId>> = {
+  chokecherry: 'chokecherry_leaves',
+  lilac: 'lilac_leaves',
+  smoke_tree: 'smoke_tree_leaves',
+  rhododendron: 'rhododendron_leaves',
+};
+
+export interface FoliageParticleSprite {
+  map: THREE.Texture;
+  alphaTest: number;
+}
+
+/** Alpha-tested sprig used when a cut limb throws foliage. Reuses the tree's cached texture. */
+export function getFoliageParticleSprite(
+  speciesId: SpeciesId,
+  quality: GraphicsQuality,
+  opts: { deadwood?: boolean; category?: 'conifer' | 'deciduous' } = {}
+): FoliageParticleSprite | null {
+  let id: BotanicalSprigId;
+  if (opts.deadwood) {
+    id = opts.category === 'conifer' ? 'deadwood_conifer' : 'deadwood';
+  } else if (isBotanicalPrototypeSpecies(speciesId)) {
+    id = LEAF_PARTICLE_SPRIG[speciesId] ?? (speciesId as BotanicalSprigId);
+  } else {
+    return null;
+  }
+  const tex = getSprigTextures(id, quality);
+  return { map: tex.map, alphaTest: SPRIG_CONFIGS[id].alphaTest };
+}
+
 interface CachedSprigTextures {
   map: THREE.Texture;
   normalMap: THREE.Texture | null;
@@ -1652,7 +1683,7 @@ export function buildBotanicalFoliageCluster(
     if (!isDeadwood && ctx.liveVeilMat) {
       const veilMesh = new THREE.Mesh(cardGeo, ctx.liveVeilMat);
       veilMesh.castShadow = false;
-      veilMesh.receiveShadow = true;
+      veilMesh.receiveShadow = false;
       veilMesh.renderOrder = 2;
       veilMesh.userData = { isBotanicalSprig: true };
       group.add(veilMesh);
@@ -1674,8 +1705,9 @@ export function buildBotanicalFoliageCluster(
   if (twigBuf.indices.length > 0) {
     const twigGeo = finalizeBufferGeometry(twigBuf, false);
     const twigMesh = new THREE.Mesh(twigGeo, ctx.twigMat);
-    twigMesh.castShadow = isHigh;
-    twigMesh.receiveShadow = true;
+    // Canopy cards cast the dappled shadow. Sub-twigs are thin, numerous, and not worth a shadow draw.
+    twigMesh.castShadow = false;
+    twigMesh.receiveShadow = false;
     twigMesh.userData = { isBotanicalTwig: true };
     group.add(twigMesh);
   }

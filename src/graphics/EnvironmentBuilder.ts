@@ -12,6 +12,8 @@ export interface SceneOccluder {
   rootGroup: THREE.Object3D;
   occlusionFade: number;
   occlusionMaterials: Array<{ mat: THREE.Material; baseOpacity: number }>;
+  /** Static world AABB. Hazards do not move, so the fade test fills this once. */
+  worldBox?: THREE.Box3;
 }
 
 export interface BuiltEnvironment {
@@ -1944,7 +1946,6 @@ export function buildEnvironment(
     const curbStoneMat = createGroundedRockMat('#989e95', quality, contract.site, contract.weather, 1, 1);
     const maxCurbStones = quality === 'high' ? 88 : 56;
     const curbInst = new THREE.InstancedMesh(curbStoneGeo, curbStoneMat, maxCurbStones);
-    curbInst.castShadow = true;
     curbInst.receiveShadow = true;
     const curbDummy = new THREE.Object3D();
     let curbIdx = 0;
@@ -2876,7 +2877,6 @@ export function buildEnvironment(
   const scatterStoneGeo = buildSculptedBoulderGeometry(0.32, quality === 'high' ? 2 : 1, 2);
   const scatterStoneCount = Math.round((contract.site === 'coastal_town' ? 28 : 96) * densityMult);
   const scatterStoneInst = new THREE.InstancedMesh(scatterStoneGeo, rockMat, scatterStoneCount);
-  scatterStoneInst.castShadow = quality === 'high';
   scatterStoneInst.receiveShadow = true;
   let ssIdx = 0;
 
@@ -3057,7 +3057,8 @@ export function buildEnvironment(
 
   const bgTrunks = new THREE.InstancedMesh(bgTrunkGeo, bgTrunkMat, bgTreeCount);
   const bgFolCards = new THREE.InstancedMesh(bgFolGeo, bgFolMat, bgTreeCount);
-  bgFolCards.receiveShadow = true;
+  // Backdrop crowns sit at the edge of (or outside) the sun frustum. Sampling the
+  // shadow map across every alpha-tested bough is mostly fogged-out work.
 
   const bgTreeMeta: Array<{ x: number; y: number; z: number; rMax: number; yMax: number; fade: number }> = [];
 

@@ -178,10 +178,9 @@ export function createWaterShaderMaterial(cfg: WaterShaderConfig): AnimatedWater
         vec2 drift1 = uFlowDir * t * uFlowSpeed;
         vec2 drift2 = vec2(-uFlowDir.y, uFlowDir.x) * t * uFlowSpeed * 0.65;
         float h = 0.0;
-        h += vnoise(p * 1.15 + drift1 * 0.9) * 0.52;
-        h += vnoise(p * 2.45 - drift2 * 1.3 + vec2(4.7, 2.3)) * 0.28;
-        h += vnoise(p * 5.2 + drift1 * 2.1 - vec2(1.9, 6.1)) * 0.14;
-        h += vnoise(p * 11.0 - drift1 * 2.8) * 0.06;
+        h += vnoise(p * 1.15 + drift1 * 0.9) * 0.55;
+        h += vnoise(p * 2.45 - drift2 * 1.3 + vec2(4.7, 2.3)) * 0.30;
+        h += vnoise(p * 5.2 + drift1 * 2.1 - vec2(1.9, 6.1)) * 0.15;
         return h;
       }
 
@@ -204,10 +203,9 @@ export function createWaterShaderMaterial(cfg: WaterShaderConfig): AnimatedWater
         vec2 p = vec2(suv.x * 0.55 - flow * 1.05, suv.y * 4.4);
         vec2 p2 = vec2(suv.x * 1.25 - flow * 1.65, suv.y * 8.2 + sin(suv.x * 0.45) * 0.4);
         float h = 0.0;
-        h += vnoise(p * 1.15) * 0.48;
-        h += vnoise(p2 + vec2(3.1, 1.7)) * 0.30;
-        h += vnoise(vec2(suv.x * 2.6 - flow * 2.25, suv.y * 14.0)) * 0.15;
-        h += vnoise(vec2(suv.x * 5.2 - flow * 3.1, suv.y * 22.0)) * 0.07;
+        h += vnoise(p * 1.15) * 0.50;
+        h += vnoise(p2 + vec2(3.1, 1.7)) * 0.32;
+        h += vnoise(vec2(suv.x * 2.6 - flow * 2.25, suv.y * 14.0)) * 0.18;
         return h;
       }
 

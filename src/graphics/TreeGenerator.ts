@@ -1803,8 +1803,11 @@ export function buildTreeRuntime(
       branchGroup.add(tipFol);
     }
 
-    // Subtle forestry ribbon flag on target branches so player spots them effortlessly!
+    // Forestry ribbon on hazard limbs. Hidden until this tree is the active selection.
+    let hazardFlag: THREE.Group | undefined;
     if (isTarget) {
+      hazardFlag = new THREE.Group();
+      hazardFlag.visible = false;
       const ribbonMat = new THREE.MeshStandardMaterial({
         color: '#f59e0b',
         emissive: '#d97706',
@@ -1818,12 +1821,13 @@ export function buildTreeRuntime(
       );
       ribbonWrap.position.set(0.32, Math.sin(pitch) * 0.32, 0);
       ribbonWrap.rotation.y = Math.PI / 2;
-      branchGroup.add(ribbonWrap);
+      hazardFlag.add(ribbonWrap);
 
       const ribbonTail = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.65), ribbonMat);
       ribbonTail.position.set(0.34, Math.sin(pitch) * 0.32 - 0.36, 0.05);
       ribbonTail.rotation.z = 0.12;
-      branchGroup.add(ribbonTail);
+      hazardFlag.add(ribbonTail);
+      branchGroup.add(hazardFlag);
     }
 
     // Diegetic Branch Collar Ring (glows when hovered or pruning!)
@@ -1867,6 +1871,7 @@ export function buildTreeRuntime(
       meshGroup: branchGroup,
       colliderMesh,
       collarRing,
+      hazardFlag,
       attachLocalPos,
       worldDirection: new THREE.Vector3(dirX, 0, dirZ).normalize(),
       radius: bRadius,
