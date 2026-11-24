@@ -22,7 +22,7 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
 /**
  * Smooth mouse & keyboard orbital camera controller with smart contextual focus,
  * cinematic mission intro fly-ins, and impact camera shake.
- * - Right-click drag, Middle-click drag, or Arrow keys orbit around current target
+ * - Left-drag, right-click drag, middle-click drag, or Arrow keys orbit around current target
  * - Scroll wheel or `-` / `=` (`+`) keys zoom smoothly
  * - Smooth lerp transitions when selecting trees or switching tools
  */
@@ -247,6 +247,15 @@ export class CameraController {
 
   public isUserOrbiting(): boolean {
     return this.isOrbiting || this.isMultiTouchNavigating();
+  }
+
+  /** Left-button drag orbit. The caller decides when a press has become a drag. */
+  public beginDragOrbit(clientX: number, clientY: number): void {
+    if (this.intro) this.cancelIntro(false);
+    this.isOrbiting = true;
+    this.lastX = clientX;
+    this.lastY = clientY;
+    this.domElement.style.cursor = 'grabbing';
   }
 
   private upsertTouchPointer(e: PointerEvent): void {

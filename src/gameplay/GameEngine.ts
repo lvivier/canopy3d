@@ -83,6 +83,20 @@ export class GameEngine {
   private pointerNDC = new THREE.Vector2();
   private pointerScreen = { x: 0, y: 0 };
   private isLeftDown = false;
+  /**
+   * Left press starts undecided: a drag orbits, a still hold uses the tool.
+   * Quick clicks (aim lock, wedge, tree select) fire on release if it never dragged.
+   */
+  private leftGesture: {
+    pointerId: number;
+    x: number;
+    y: number;
+    lastX: number;
+    lastY: number;
+    t: number;
+    lastMove: number;
+    mode: 'undecided' | 'tool' | 'orbit';
+  } | null = null;
   private hoveredBranch: BranchData | null = null;
   private hoveredBuckRing: { tree: TreeRuntime; ring: BuckRingData } | null = null;
   private hoveredTopCut: { tree: TreeRuntime; cut: StandingTopCutData } | null = null;
@@ -1641,6 +1655,7 @@ export class GameEngine {
 
   private bindInputEvents(): void {
     this.cameraCtrl.setMultiTouchBeginListener(() => {
+      this.leftGesture = null;
       if (this.isLeftDown) {
         this.isLeftDown = false;
         this.handlePrimaryUp();
@@ -1658,13 +1673,22 @@ export class GameEngine {
 
     this.canvas.addEventListener('pointermove', (e) => {
       this.updatePointerCoords(e);
+      this.updateLeftGesture(e);
       if (
         this.screen === 'playing' &&
         !this.cameraCtrl.isUserOrbiting() &&
-        !this.cameraCtrl.isIntroPlaying()
+        !this.cameraCtrl.isIntroPlaying() &&
+        this.leftGesture?.mode !== 'undecided'
       ) {
         this.handlePointerHover();
       }
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!this.leftGesture || this.leftGesture.mode !== 'undecided') return;
+      if (e.pointerId !== this.leftGesture.pointerId) return;
+      this.updatePointerCoords(e);
+      this.updateLeftGesture(e);
     });
 
     this.canvas.addEventListener('pointerdown', (e) => {
@@ -1677,17 +1701,51 @@ export class GameEngine {
         this.skipIntroToFocus();
         return;
       }
-      this.isLeftDown = true;
-      this.handlePrimaryDown();
+      const now = performance.now();
+      this.leftGesture = {
+        pointerId: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        lastX: e.clientX,
+        lastY: e.clientY,
+        t: now,
+        lastMove: now,
+        mode: 'undecided',
+      };
     });
 
-    window.addEventListener('pointerup', (e) => {
+    const endLeftGesture = (e: PointerEvent): void => {
+      if (e.type === 'pointercancel') {
+        const gesture = this.leftGesture;
+        this.leftGesture = null;
+        if (gesture?.mode === 'tool' && this.isLeftDown) {
+          this.isLeftDown = false;
+          this.handlePrimaryUp();
+        }
+        return;
+      }
       if (e.button !== 0) return;
+      const gesture = this.leftGesture;
+      if (!gesture || e.pointerId !== gesture.pointerId) return;
+      this.leftGesture = null;
+      if (gesture.mode === 'orbit') return;
+      if (gesture.mode === 'undecided') {
+        this.updatePointerCoords(e);
+        this.handlePointerHover();
+        this.isLeftDown = true;
+        this.handlePrimaryDown();
+        this.isLeftDown = false;
+        this.handlePrimaryUp();
+        return;
+      }
       if (this.isLeftDown) {
         this.isLeftDown = false;
         this.handlePrimaryUp();
       }
-    });
+    };
+
+    window.addEventListener('pointerup', endLeftGesture);
+    window.addEventListener('pointercancel', endLeftGesture);
 
     // Optional keyboard shortcuts for power users (never required!)
     window.addEventListener('keydown', (e) => {
@@ -1708,6 +1766,34 @@ export class GameEngine {
       else if (e.key === 'e' || e.key === 'E') this.orbitCameraStep(1);
       else if (e.key === 'Escape' && this.getActiveTree()?.stage === 'aimed') this.resetAim();
     });
+  }
+
+  private updateLeftGesture(e: PointerEvent): void {
+    const gesture = this.leftGesture;
+    if (!gesture || gesture.mode !== 'undecided' || e.pointerId !== gesture.pointerId) return;
+    const dist = Math.hypot(e.clientX - gesture.x, e.clientY - gesture.y);
+    if (dist >= 7) {
+      gesture.mode = 'orbit';
+      this.cameraCtrl.beginDragOrbit(e.clientX, e.clientY);
+      return;
+    }
+    if (Math.hypot(e.clientX - gesture.lastX, e.clientY - gesture.lastY) > 1) {
+      gesture.lastX = e.clientX;
+      gesture.lastY = e.clientY;
+      gesture.lastMove = performance.now();
+    }
+  }
+
+  /** A press that stays still becomes the tool; a moving press keeps waiting so it can orbit. */
+  private commitStationaryLeftHold(): void {
+    const gesture = this.leftGesture;
+    if (!gesture || gesture.mode !== 'undecided') return;
+    const now = performance.now();
+    if (now - gesture.t < 100 || now - gesture.lastMove < 50) return;
+    gesture.mode = 'tool';
+    this.handlePointerHover();
+    this.isLeftDown = true;
+    this.handlePrimaryDown();
   }
 
   private updatePointerCoords(e: PointerEvent): void {
@@ -3705,6 +3791,7 @@ export class GameEngine {
     this.audio.update(dt);
 
     if (this.screen === 'playing' && !this.gameplayPaused) {
+      this.commitStationaryLeftHold();
       this.updateCutting(dt);
       this.updateWedgeAnimation(dt);
       this.updateFallingPhysics(dt);

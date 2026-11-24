@@ -161,7 +161,7 @@ export class UIManager {
 
         <div class="title-actions">
           <button class="btn btn-primary btn-lg" id="btn-play-campaign">
-            ${completedCount > 0 ? `Continue Job #${nextContract.index}` : 'Start Career Campaign'}
+            ${completedCount > 0 ? `Continue Job #${nextContract.index}` : 'Start Game'}
           </button>
           <button class="btn btn-secondary" id="btn-open-contracts">
             Jobs (${completedCount}/${CAMPAIGN_CONTRACTS.length})
@@ -179,7 +179,7 @@ export class UIManager {
             <span class="hint-touch"><b>Tap</b> Aim, Prune, Saw &amp; Wedge</span>
           </span>
           <span class="legend-row">
-            <span class="hint-pointer"><b>Right-Click Drag</b> Orbit Camera</span>
+            <span class="hint-pointer"><b>Drag</b> or <b>Right-Click Drag</b> Orbit Camera</span>
             <span class="hint-touch"><b>Two-finger drag</b> Orbit Camera</span>
           </span>
           <span class="legend-row">
@@ -216,7 +216,7 @@ export class UIManager {
       .filter((group) => group.items.length > 0);
 
     if (groups.length === 0) {
-      return `<p class="species-showcase-empty">Trees you meet on campaign jobs show up here.</p>`;
+      return `<p class="species-showcase-empty">Trees you meet on jobs show up here.</p>`;
     }
 
     return `

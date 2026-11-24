@@ -1233,7 +1233,7 @@ export function createSandboxContract(opts: {
       'Practice freely with all tools unlocked! Prune hazard limbs to shift lean, cut face notches and back cuts, use wedges, aim the drop zone, and buck sawlogs.',
     tips: [
       'Switch tools anytime along the bottom dock.',
-      'Right-click drag to orbit, scroll to zoom.',
+      'Drag or right-click to orbit, scroll to zoom.',
     ],
     basePayout: 500,
     isSandbox: true,

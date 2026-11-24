@@ -9,7 +9,7 @@ export function isTouchUi(): boolean {
 export function cameraOrbitZoomHint(): string {
   return isTouchUi()
     ? 'Two-finger drag to Orbit · Pinch to Zoom'
-    : 'Right-Click Drag to Orbit · Scroll or pinch to Zoom';
+    : 'Drag or Right-Click to Orbit · Scroll or pinch to Zoom';
 }
 
 export function introSkipHint(): string {
@@ -19,7 +19,7 @@ export function introSkipHint(): string {
 }
 
 export function orbitOnlyHint(): string {
-  return isTouchUi() ? 'Two-finger drag to Orbit' : 'Right-Click Drag to Orbit';
+  return isTouchUi() ? 'Two-finger drag to Orbit' : 'Drag or Right-Click to Orbit';
 }
 
 /** Rewrite pointer-specific phrases for touch UI (HUD, toasts, dynamic copy). */
