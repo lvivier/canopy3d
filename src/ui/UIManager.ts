@@ -113,6 +113,14 @@ export class UIManager {
 
   public render(state: GameHUDState): void {
     this.lastState = state;
+    const nextTitle =
+      (state.screen === 'playing' || state.screen === 'debrief') && state.contract?.title
+        ? `Canopy 3D: ${state.contract.title}`
+        : 'Canopy 3D';
+    if (document.title !== nextTitle) {
+      document.title = nextTitle;
+    }
+
     if (state.screen !== this.lastScreen) {
       this.lastScreen = state.screen;
       this.playingContainer = null;
@@ -125,7 +133,7 @@ export class UIManager {
 
       if (state.screen === 'title') this.renderTitleScreen(state);
       else if (state.screen === 'contracts') this.renderContractsScreen(state);
-      else if (state.screen === 'sandbox') this.renderSandboxScreen();
+      else if (state.screen === 'sandbox') this.renderSandboxScreen(state);
       else if (state.screen === 'playing') this.mountPlayingHUD(state);
       else if (state.screen === 'debrief') this.renderDebriefScreen(state);
       return;
@@ -133,12 +141,6 @@ export class UIManager {
 
     if (state.screen === 'playing') {
       this.updatePlayingHUD(state);
-    } else if (state.screen === 'title') {
-      this.root.querySelectorAll<HTMLButtonElement>('[data-quality-opt]').forEach((btn) => {
-        const active = btn.dataset.qualityOpt === state.graphicsQuality;
-        btn.classList.toggle('active', active);
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-      });
     }
   }
 
@@ -169,31 +171,7 @@ export class UIManager {
           </button>
         </div>
 
-        <div class="species-showcase">
-          ${(['conifer', 'deciduous'] as const)
-            .map((category) => {
-              const items = SPECIES_LIST.filter((s) => s.category === category).sort((a, b) =>
-                a.name.localeCompare(b.name)
-              );
-              const label = category === 'conifer' ? 'Conifers' : 'Hardwoods & Deciduous';
-              return `
-            <section class="species-group" aria-label="${label}">
-              <h3 class="species-group-title">${label} <span class="species-group-count">${items.length}</span></h3>
-              <div class="species-group-pills">
-                ${items
-                  .map(
-                    (s) => `
-                <div class="species-pill" title="${s.description}">
-                  <span class="species-dot" style="background:${s.foliageColors[0]}; border-color:${s.heartwoodColor}"></span>
-                  <span class="species-pill-name">${s.name}</span>
-                </div>`
-                  )
-                  .join('')}
-              </div>
-            </section>`;
-            })
-            .join('')}
-        </div>
+        ${this.renderSpeciesShowcase(state)}
 
         <div class="controls-legend">
           <span class="legend-row">
@@ -209,24 +187,6 @@ export class UIManager {
             <span class="hint-touch"><b>Pinch</b> Zoom</span>
           </span>
         </div>
-
-        <div class="title-quality-row">
-          <span class="quality-label">Graphics Detail</span>
-          <div class="quality-segmented" role="group" aria-label="Graphics Detail">
-            <button
-              type="button"
-              class="quality-opt ${state.graphicsQuality === 'standard' ? 'active' : ''}"
-              data-quality-opt="standard"
-              aria-pressed="${state.graphicsQuality === 'standard' ? 'true' : 'false'}"
-            >Standard</button>
-            <button
-              type="button"
-              class="quality-opt ${state.graphicsQuality === 'high' ? 'active' : ''}"
-              data-quality-opt="high"
-              aria-pressed="${state.graphicsQuality === 'high' ? 'true' : 'false'}"
-            >High</button>
-          </div>
-        </div>
       </div>
     `;
     this.root.appendChild(wrap);
@@ -240,12 +200,47 @@ export class UIManager {
     wrap.querySelector('#btn-open-sandbox')?.addEventListener('click', () => {
       this.engine.openScreen('sandbox');
     });
-    wrap.querySelectorAll<HTMLButtonElement>('[data-quality-opt]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const q = btn.dataset.qualityOpt as GraphicsQuality | undefined;
-        if (q) this.engine.setGraphicsQuality(q);
-      });
-    });
+  }
+
+  /** Home-menu roster: only species met on a campaign job. */
+  private renderSpeciesShowcase(state: GameHUDState): string {
+    const known = new Set(state.encounteredSpecies);
+    const groups = (['conifer', 'deciduous'] as const)
+      .map((category) => {
+        const items = SPECIES_LIST.filter((s) => s.category === category && known.has(s.id)).sort((a, b) =>
+          a.name.localeCompare(b.name)
+        );
+        const label = category === 'conifer' ? 'Conifers' : 'Hardwoods & Deciduous';
+        return { label, items };
+      })
+      .filter((group) => group.items.length > 0);
+
+    if (groups.length === 0) {
+      return `<p class="species-showcase-empty">Trees you meet on campaign jobs show up here.</p>`;
+    }
+
+    return `
+      <div class="species-showcase">
+        ${groups
+          .map(
+            ({ label, items }) => `
+          <section class="species-group" aria-label="${label}">
+            <h3 class="species-group-title">${label} <span class="species-group-count">${items.length}</span></h3>
+            <div class="species-group-pills">
+              ${items
+                .map(
+                  (s) => `
+              <div class="species-pill" title="${s.description}">
+                <span class="species-dot" style="background:${s.foliageColors[0]}; border-color:${s.heartwoodColor}"></span>
+                <span class="species-pill-name">${s.name}</span>
+              </div>`
+                )
+                .join('')}
+            </div>
+          </section>`
+          )
+          .join('')}
+      </div>`;
   }
 
   private renderContractsScreen(state: GameHUDState): void {
@@ -331,7 +326,32 @@ export class UIManager {
     });
   }
 
-  private renderSandboxScreen(): void {
+  private clampSandboxSelection(state: GameHUDState): void {
+    const species = state.encounteredSpecies;
+    const sites = state.encounteredSites;
+    if (species.length === 0 || sites.length === 0) return;
+
+    const speciesChanged = !species.includes(this.sbSpecies);
+    if (speciesChanged) this.sbSpecies = species[0];
+
+    const env = getSandboxEnvForSpecies(this.sbSpecies);
+    if (speciesChanged) {
+      this.sbWeather = env.weather;
+      this.sbWind = env.windSpeed;
+    }
+    if (speciesChanged || !sites.includes(this.sbSite)) {
+      this.sbSite = sites.includes(env.site) ? env.site : sites[0];
+    }
+  }
+
+  private renderSandboxScreen(state: GameHUDState): void {
+    this.clampSandboxSelection(state);
+    const speciesChoices = SPECIES_LIST.filter((s) => state.encounteredSpecies.includes(s.id));
+    const siteChoices = (Object.keys(SITE_NAMES) as SiteId[]).filter((id) =>
+      state.encounteredSites.includes(id)
+    );
+    const ready = speciesChoices.length > 0 && siteChoices.length > 0;
+
     const wrap = document.createElement('div');
     wrap.className = 'overlay-screen sandbox-screen';
     wrap.innerHTML = `
@@ -344,18 +364,23 @@ export class UIManager {
           <button class="btn btn-ghost" id="btn-sb-back">← Back</button>
         </div>
 
+        ${
+          ready
+            ? `
         <div class="sandbox-section">
           <label>Select tree species</label>
           <div class="choice-grid species-choices">
-            ${SPECIES_LIST.map(
-              (s) => `
+            ${speciesChoices
+              .map(
+                (s) => `
               <button class="choice-btn ${this.sbSpecies === s.id ? 'active' : ''}" data-species="${s.id}">
                 <strong>${s.name}</strong>
                 <span>${s.latinName}</span>
-                <small>${s.category === 'conifer' ? 'Conifer' : 'Hardwood'} · Density ${Math.round(s.woodDensity * 100)}%</small>
+                <small>${s.category === 'conifer' ? 'Conifer' : 'Hardwood'}</small>
               </button>
             `
-            ).join('')}
+              )
+              .join('')}
           </div>
         </div>
 
@@ -363,7 +388,7 @@ export class UIManager {
           <div class="sandbox-section">
             <label>Environment</label>
             <div class="choice-grid compact">
-              ${(Object.keys(SITE_NAMES) as SiteId[])
+              ${siteChoices
                 .map(
                   (id) =>
                     `<button class="choice-btn ${this.sbSite === id ? 'active' : ''}" data-site="${id}">${SITE_NAMES[id]}</button>`
@@ -392,7 +417,9 @@ export class UIManager {
 
         <div class="sandbox-actions">
           <button class="btn btn-primary btn-lg" id="btn-launch-sandbox">Start Free Cut →</button>
-        </div>
+        </div>`
+            : `<p class="sandbox-locked-note">Work a campaign job to unlock trees and places for Free Cut.</p>`
+        }
       </div>
     `;
     this.root.appendChild(wrap);
@@ -400,17 +427,21 @@ export class UIManager {
     wrap.querySelector('#btn-sb-back')?.addEventListener('click', () => this.engine.goBackFromSandbox());
     wrap.querySelectorAll('[data-species]').forEach((el) => {
       el.addEventListener('click', () => {
-        this.sbSpecies = (el as HTMLElement).dataset.species as SpeciesId;
+        const next = (el as HTMLElement).dataset.species as SpeciesId;
+        if (!state.encounteredSpecies.includes(next)) return;
+        this.sbSpecies = next;
         const env = getSandboxEnvForSpecies(this.sbSpecies);
-        this.sbSite = env.site;
         this.sbWeather = env.weather;
         this.sbWind = env.windSpeed;
+        if (state.encounteredSites.includes(env.site)) this.sbSite = env.site;
         this.updateSandboxChoiceStates();
       });
     });
     wrap.querySelectorAll('[data-site]').forEach((el) => {
       el.addEventListener('click', () => {
-        this.sbSite = (el as HTMLElement).dataset.site as SiteId;
+        const next = (el as HTMLElement).dataset.site as SiteId;
+        if (!state.encounteredSites.includes(next)) return;
+        this.sbSite = next;
         this.updateSandboxChoiceStates();
       });
     });
@@ -427,6 +458,12 @@ export class UIManager {
       valEl.textContent = `${Math.round(this.sbWind * 45)} mph`;
     });
     wrap.querySelector('#btn-launch-sandbox')?.addEventListener('click', () => {
+      if (
+        !state.encounteredSpecies.includes(this.sbSpecies) ||
+        !state.encounteredSites.includes(this.sbSite)
+      ) {
+        return;
+      }
       const c = createSandboxContract({
         species: this.sbSpecies,
         site: this.sbSite,
@@ -597,7 +634,7 @@ export class UIManager {
         <div class="hud-confirm-card" role="dialog" aria-labelledby="hud-reset-confirm-title" aria-modal="true">
           <h3 class="hud-confirm-title" id="hud-reset-confirm-title">Reset all progress?</h3>
           <p class="hud-confirm-body">
-            This clears completed jobs, earnings, and your Arborist Level. This cannot be undone.
+            This clears completed jobs, earnings, your Arborist Level, and the trees and places you've met. This cannot be undone.
           </p>
           <div class="hud-confirm-actions">
             <button type="button" class="btn btn-ghost" id="btn-reset-confirm-cancel">Cancel</button>

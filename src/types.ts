@@ -130,6 +130,8 @@ export interface HazardSpec {
   width?: number;
   depth?: number;
   rotation?: number;
+  /** Species used by protected saplings so each young tree matches its stand */
+  species?: SpeciesId;
 }
 
 export interface DropZoneSpec {
@@ -381,6 +383,10 @@ export interface GameHUDState {
   totalEarnings: number;
   /** Arborist level 1–5: unlocks jobs through completed level-gate contracts */
   playerLevel: number;
+  /** Species met by starting or finishing a campaign job */
+  encounteredSpecies: SpeciesId[];
+  /** Sites met by starting or finishing a campaign job */
+  encounteredSites: SiteId[];
   /** Debrief data */
   debrief?: {
     success: boolean;

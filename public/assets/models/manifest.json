@@ -1,0 +1,13 @@
+{
+  "generatedAt": "2026-11-24T21:52:29.817Z",
+  "models": {
+    "truck": {
+      "name": "Crew-Cab Pickup Truck",
+      "source": "tevy.dev",
+      "sourcePage": "https://tevy.dev/models/pickup-truck",
+      "license": "CC0 1.0 Universal",
+      "lod0": "/assets/models/truck/lod0.glb",
+      "lod1": "/assets/models/truck/lod1.glb"
+    }
+  }
+}

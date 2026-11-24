@@ -5,6 +5,8 @@ import {
   ContractSpec,
   GameHUDState,
   GraphicsQuality,
+  SiteId,
+  SpeciesId,
   StandingTopCutData,
   ToolId,
   TreeRuntime,
@@ -12,20 +14,23 @@ import {
 import {
   CAMPAIGN_CONTRACTS,
   derivePlayerLevel,
+  encountersFromCompleted,
   findNextUnlockedJob,
   isCampaignJobUnlocked,
+  isSandboxSelectionAllowed,
   LEVEL_GATE_CONTRACT_IDS,
+  mergeEncounterLists,
 } from '../data/contracts';
 import { AudioEngine } from '../audio/AudioEngine';
-import { buildEnvironment, BuiltEnvironment } from '../graphics/EnvironmentBuilder';
+import { buildEnvironment, BuiltEnvironment, getTerrainHeight } from '../graphics/EnvironmentBuilder';
 import { buildTreeRuntime, recomputeTreeLean, syncTrunkCutVisuals } from '../graphics/TreeGenerator';
 import { pbrAssets } from '../graphics/PbrAssetManager';
+import { initPropModelLoader } from '../graphics/PropModelLoader';
 import { PostPipeline } from '../graphics/PostPipeline';
 import { FoliageWindUniforms } from '../graphics/MaterialShaders';
 import { CameraController, CameraKeyframe } from './CameraController';
 import { ParticleSystem } from './ParticleSystem';
 import {
-  cameraOrbitZoomHint,
   introSkipHint,
   isTouchUi,
   localizeControlCopy,
@@ -41,6 +46,8 @@ interface SavedProgress {
   completedContracts: Record<string, { stars: number; score: number; earnings: number }>;
   totalEarnings: number;
   playerLevel?: number;
+  encounteredSpecies?: SpeciesId[];
+  encounteredSites?: SiteId[];
 }
 
 export class GameEngine {
@@ -128,6 +135,8 @@ export class GameEngine {
   private completedContracts: Record<string, { stars: number; score: number; earnings: number }> = {};
   private totalEarnings = 0;
   private playerLevel = 1;
+  private encounteredSpecies: SpeciesId[] = [];
+  private encounteredSites: SiteId[] = [];
   private gameplayPaused = false;
   private debriefData: GameHUDState['debrief'] = undefined;
   private contractFinished = false;
@@ -157,6 +166,7 @@ export class GameEngine {
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.25, 400);
     pbrAssets.configureRenderer(this.renderer, this.graphicsQuality);
+    initPropModelLoader(this.renderer);
     if (this.graphicsQuality === 'high') {
       this.postPipeline = new PostPipeline(this.renderer, this.scene, this.camera);
       this.postPipeline.setSize(window.innerWidth, window.innerHeight, initDpr);
@@ -263,6 +273,21 @@ export class GameEngine {
       this.completedContracts = parsed.completedContracts ?? {};
       this.totalEarnings = parsed.totalEarnings ?? 0;
       this.playerLevel = derivePlayerLevel(this.completedContracts, parsed.playerLevel);
+      const merged = mergeEncounterLists(
+        parsed.encounteredSpecies,
+        parsed.encounteredSites,
+        encountersFromCompleted(this.completedContracts)
+      );
+      this.encounteredSpecies = merged.species;
+      this.encounteredSites = merged.sites;
+      const storedSpecies = JSON.stringify(parsed.encounteredSpecies ?? []);
+      const storedSites = JSON.stringify(parsed.encounteredSites ?? []);
+      if (
+        storedSpecies !== JSON.stringify(merged.species) ||
+        storedSites !== JSON.stringify(merged.sites)
+      ) {
+        this.saveProgress();
+      }
     } catch {
       // ignore
     }
@@ -274,11 +299,30 @@ export class GameEngine {
         completedContracts: this.completedContracts,
         totalEarnings: this.totalEarnings,
         playerLevel: this.playerLevel,
+        encounteredSpecies: this.encounteredSpecies,
+        encounteredSites: this.encounteredSites,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch {
       // ignore
     }
+  }
+
+  /** Remember trees and the site from a campaign job the player has actually opened. */
+  private rememberCampaignEncounter(contract: ContractSpec): void {
+    if (contract.isSandbox) return;
+    let changed = false;
+    for (const tree of contract.trees) {
+      if (!this.encounteredSpecies.includes(tree.species)) {
+        this.encounteredSpecies.push(tree.species);
+        changed = true;
+      }
+    }
+    if (!this.encounteredSites.includes(contract.site)) {
+      this.encounteredSites.push(contract.site);
+      changed = true;
+    }
+    if (changed) this.saveProgress();
   }
 
   private loadGraphicsQuality(): GraphicsQuality {
@@ -484,11 +528,26 @@ export class GameEngine {
   }
 
   public startContract(contract: ContractSpec): void {
-    if (!contract.isSandbox && !isCampaignJobUnlocked(contract, this.playerLevel)) {
+    if (contract.isSandbox) {
+      const species = contract.trees[0]?.species;
+      if (
+        !isSandboxSelectionAllowed(
+          species,
+          contract.site,
+          this.encounteredSpecies,
+          this.encounteredSites
+        )
+      ) {
+        this.audio.init();
+        this.showToast('Free Cut only includes trees and places you have met on campaign jobs.', 'warn');
+        return;
+      }
+    } else if (!isCampaignJobUnlocked(contract, this.playerLevel)) {
       this.audio.init();
       this.showToast('This job is locked — finish the level-up job on the Job Board first!', 'warn');
       return;
     }
+    this.rememberCampaignEncounter(contract);
     this.audio.init();
     this.audio.playClick();
     this.clearCurrentScene();
@@ -516,7 +575,7 @@ export class GameEngine {
       });
       this.scene.add(tree.rootGroup);
       if (tSpec.dropZone) {
-        tree.dropZoneGroup = this.buildDropZoneVisual(tSpec.dropZone);
+        tree.dropZoneGroup = this.buildDropZoneVisual(tSpec.dropZone, contract.site);
         this.scene.add(tree.dropZoneGroup);
       }
       this.trees.push(tree);
@@ -638,6 +697,8 @@ export class GameEngine {
     this.completedContracts = {};
     this.totalEarnings = 0;
     this.playerLevel = 1;
+    this.encounteredSpecies = [];
+    this.encounteredSites = [];
     this.currentContract = null;
     this.contractFinished = false;
     this.debriefData = undefined;
@@ -1238,14 +1299,49 @@ export class GameEngine {
     this.cameraCtrl.cancelIntro(true);
   }
 
-  private buildDropZoneVisual(dz: NonNullable<TreeRuntime['spec']['dropZone']>): THREE.Group {
+  private buildDropZoneVisual(
+    dz: NonNullable<TreeRuntime['spec']['dropZone']>,
+    site: SiteId
+  ): THREE.Group {
     const g = new THREE.Group();
-    g.position.set(dz.x, 0.05, dz.z);
+    g.position.set(dz.x, 0, dz.z);
     g.rotation.y = -dz.angle;
 
-    // Translucent emerald landing corridor mat
-    const stripGeo = new THREE.PlaneGeometry(dz.length, dz.width);
-    stripGeo.rotateX(-Math.PI / 2);
+    // Sit above gravel driveway crowns (~4cm) and the town street so the corridor
+    // reads on the road surface instead of showing through underneath it.
+    const surfaceLift = 0.09;
+    const theta = -dz.angle;
+    const cosY = Math.cos(theta);
+    const sinY = Math.sin(theta);
+    const segsL = Math.max(10, Math.ceil(dz.length / 1.25));
+    const segsW = Math.max(4, Math.ceil(dz.width / 1.15));
+    const sampleY = (lx: number, lz: number): number => {
+      const wx = dz.x + lx * cosY + lz * sinY;
+      const wz = dz.z - lx * sinY + lz * cosY;
+      return getTerrainHeight(wx, wz, site) + surfaceLift;
+    };
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+    for (let iz = 0; iz <= segsW; iz++) {
+      const lz = -dz.width / 2 + (iz / segsW) * dz.width;
+      for (let ix = 0; ix <= segsL; ix++) {
+        const lx = -dz.length / 2 + (ix / segsL) * dz.length;
+        positions.push(lx, sampleY(lx, lz), lz);
+      }
+    }
+    const stride = segsL + 1;
+    for (let iz = 0; iz < segsW; iz++) {
+      for (let ix = 0; ix < segsL; ix++) {
+        const a = iz * stride + ix;
+        indices.push(a, a + stride, a + 1);
+        indices.push(a + 1, a + stride, a + stride + 1);
+      }
+    }
+    const stripGeo = new THREE.BufferGeometry();
+    stripGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    stripGeo.setIndex(indices);
+    stripGeo.computeVertexNormals();
     const stripMat = new THREE.MeshBasicMaterial({
       color: '#10b981',
       transparent: true,
@@ -1254,9 +1350,10 @@ export class GameEngine {
       depthWrite: false,
     });
     const strip = new THREE.Mesh(stripGeo, stripMat);
+    // Draw after transparent roads so the landing mat composites on top of gravel and asphalt
+    strip.renderOrder = 6;
     g.add(strip);
 
-    // Crisp dashed-feel glowing border rails
     const borderMat = new THREE.MeshBasicMaterial({
       color: '#34d399',
       transparent: true,
@@ -1264,18 +1361,53 @@ export class GameEngine {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    for (const side of [-1, 1]) {
-      const rail = new THREE.Mesh(new THREE.PlaneGeometry(dz.length, 0.16), borderMat);
-      rail.rotation.x = -Math.PI / 2;
-      rail.position.set(0, 0.02, side * (dz.width / 2));
+    const addBorder = (edge: Array<[number, number]>) => {
+      const railPos: number[] = [];
+      const railIdx: number[] = [];
+      const half = 0.08;
+      for (let i = 0; i < edge.length; i++) {
+        const [lx, lz] = edge[i];
+        let tx = 1;
+        let tz = 0;
+        if (i < edge.length - 1) {
+          tx = edge[i + 1][0] - lx;
+          tz = edge[i + 1][1] - lz;
+        } else {
+          tx = lx - edge[i - 1][0];
+          tz = lz - edge[i - 1][1];
+        }
+        const len = Math.hypot(tx, tz) || 1;
+        const px = (-tz / len) * half;
+        const pz = (tx / len) * half;
+        const y = sampleY(lx, lz) + 0.012;
+        railPos.push(lx - px, y, lz - pz, lx + px, y, lz + pz);
+        if (i < edge.length - 1) {
+          const b = i * 2;
+          railIdx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+        }
+      }
+      const railGeo = new THREE.BufferGeometry();
+      railGeo.setAttribute('position', new THREE.Float32BufferAttribute(railPos, 3));
+      railGeo.setIndex(railIdx);
+      const rail = new THREE.Mesh(railGeo, borderMat);
+      rail.renderOrder = 6;
       g.add(rail);
-    }
-    for (const end of [-1, 1]) {
-      const cap = new THREE.Mesh(new THREE.PlaneGeometry(0.16, dz.width), borderMat);
-      cap.rotation.x = -Math.PI / 2;
-      cap.position.set(end * (dz.length / 2), 0.02, 0);
-      g.add(cap);
-    }
+    };
+    const along = (fixedZ: number | null, fixedX: number | null): Array<[number, number]> => {
+      const pts: Array<[number, number]> = [];
+      const n = fixedZ !== null ? segsL : segsW;
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        const lx = fixedX !== null ? fixedX : -dz.length / 2 + t * dz.length;
+        const lz = fixedZ !== null ? fixedZ : -dz.width / 2 + t * dz.width;
+        pts.push([lx, lz]);
+      }
+      return pts;
+    };
+    addBorder(along(-dz.width / 2, null));
+    addBorder(along(dz.width / 2, null));
+    addBorder(along(null, -dz.length / 2));
+    addBorder(along(null, dz.length / 2));
 
     // 4 Corner Forestry Stakes with green surveyor flags
     const stakeMat = new THREE.MeshStandardMaterial({
@@ -1292,11 +1424,12 @@ export class GameEngine {
     });
     for (const sx of [-dz.length / 2, dz.length / 2]) {
       for (const sz of [-dz.width / 2, dz.width / 2]) {
+        const groundY = sampleY(sx, sz) - surfaceLift;
         const stake = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.15, 6), stakeMat);
-        stake.position.set(sx, 0.55, sz);
+        stake.position.set(sx, groundY + 0.55, sz);
         g.add(stake);
         const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.24), flagMat);
-        flag.position.set(sx + 0.18, 0.98, sz);
+        flag.position.set(sx + 0.18, groundY + 0.98, sz);
         g.add(flag);
       }
     }
@@ -3102,7 +3235,7 @@ export class GameEngine {
 
     // Build dynamic one-line contextual mouse prompt
     let promptText = '';
-    let subPromptText = cameraOrbitZoomHint();
+    let subPromptText = '';
 
     if (tree && contract) {
       if (this.cameraCtrl.isIntroPlaying()) {
@@ -3325,6 +3458,8 @@ export class GameEngine {
       completedContracts: this.completedContracts,
       totalEarnings: this.totalEarnings,
       playerLevel: this.playerLevel,
+      encounteredSpecies: this.encounteredSpecies,
+      encounteredSites: this.encounteredSites,
       debrief: this.debriefData,
       toast: this.elapsed < this.toastExpireAt ? this.currentToast : undefined,
     };

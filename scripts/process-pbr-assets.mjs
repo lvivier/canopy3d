@@ -138,9 +138,10 @@ function extractPBR(rgb, w, h, mode, seamless) {
     luma[i] = 0.299 * r + 0.587 * g + 0.114 * b;
 
     if (mode === 'peeling_arbutus') {
-      // Terracotta outer bark has strong R > G; chartreuse/ochre underbark has high G relative to R
-      const outerScore = clamp(((r - g) - 0.06) * 5.2, 0, 1);
-      peelMask[i] = outerScore;
+      // Dark mahogany-russet curling outer strips have lower luma & higher red saturation than smooth ochre/orange inner bark
+      const darkStrip = clamp((0.46 - luma[i]) * 4.5, 0, 1);
+      const redEdge = clamp(((r - g) - 0.14) * 3.8, 0, 1);
+      peelMask[i] = clamp(darkStrip * 0.72 + redEdge * 0.45, 0, 1);
     }
   }
 
@@ -166,17 +167,17 @@ function extractPBR(rgb, w, h, mode, seamless) {
     }
   } else if (mode === 'peeling_arbutus') {
     const smoothOuter = blurFloat(peelMask, w, h, 2, seamless);
-    const edgeAO = blurFloat(peelMask, w, h, 8, seamless);
-    normalStrength = 3.0;
+    const edgeAO = blurFloat(peelMask, w, h, 9, seamless);
+    normalStrength = 3.6;
     for (let i = 0; i < n; i++) {
-      const micro = (luma[i] - blurSmall[i]) * 0.35;
-      // Outer terracotta plates sit raised above satin chartreuse inner bark
-      height[i] = clamp(0.28 + smoothOuter[i] * 0.56 + micro, 0, 1);
-      // Cavity AO right along the curled peel margin
+      const micro = (luma[i] - blurSmall[i]) * 0.48;
+      // Curling papery mahogany outer strips sit raised above velvety smooth inner terracotta/ochre wood
+      height[i] = clamp(0.26 + smoothOuter[i] * 0.58 + micro, 0, 1);
+      // Cavity AO right along the lifted papery peel margins
       const curlEdge = Math.abs(smoothOuter[i] - edgeAO[i]);
-      const ao = clamp(0.95 - curlEdge * 1.65 - (1 - smoothOuter[i]) * 0.08, 0.45, 1.0);
-      // Fresh inner bark is satin smooth (~0.48); outer terracotta bark is slightly drier (~0.72)
-      const rough = clamp(0.48 + smoothOuter[i] * 0.24 + Math.abs(micro) * 0.8, 0.4, 0.86);
+      const ao = clamp(0.96 - curlEdge * 1.85 - smoothOuter[i] * 0.12, 0.42, 1.0);
+      // Fresh inner bark is silky smooth (~0.46); curling dry mahogany peel strips are drier/rougher (~0.78)
+      const rough = clamp(0.46 + smoothOuter[i] * 0.32 + Math.abs(micro) * 0.9, 0.38, 0.9);
       arm[i * 3] = Math.round(ao * 255);
       arm[i * 3 + 1] = Math.round(rough * 255);
       arm[i * 3 + 2] = 0;

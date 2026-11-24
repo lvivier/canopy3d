@@ -1,9 +1,12 @@
 import * as THREE from 'three';
-import { ContractSpec, GraphicsQuality, HazardSpec, SiteId, WeatherId } from '../types';
+import { ContractSpec, GraphicsQuality, HazardSpec, SiteId, SpeciesId, WeatherId } from '../types';
+import { PNW_SPECIES } from '../data/species';
 import { textureCache } from './ProceduralTextures';
 import { ensureAoUv, pbrAssets, SITE_TERRAIN_PROFILES } from './PbrAssetManager';
 import { createWaterShaderMaterial } from './WaterShader';
-import { applyTerrainDetailShader } from './MaterialShaders';
+import { applyGroundCoverShader, applyGroundedRockShader, applyTerrainDetailShader, FoliageWindUniforms } from './MaterialShaders';
+import { buildBackdropConiferCrownAssets, buildBotanicalFoliageCluster, createTreeBotanicalContext } from './FoliageCardBuilder';
+import { attachPropModel } from './PropModelLoader';
 
 export interface SceneOccluder {
   rootGroup: THREE.Object3D;
@@ -497,6 +500,82 @@ function createStonePbrMat(
   });
 }
 
+function createGroundedRockMat(
+  tint: string,
+  quality: GraphicsQuality,
+  site: SiteId,
+  weather: WeatherId,
+  repeatX = 2,
+  repeatY = 2
+): THREE.MeshStandardMaterial {
+  const mat = createStonePbrMat(tint, quality, repeatX, repeatY);
+  applyGroundedRockShader(mat, site, weather);
+  return mat;
+}
+
+/**
+ * Builds an organically sculpted geological boulder/cobble geometry (replaces geometric D12 dodecahedrons):
+ * - Subdivided icosahedron displaced with multi-frequency rock cleavage planes & strata ridges
+ * - Broadened, subtly flattened lower belly so rocks seat deeply into terrain slopes without floating
+ */
+function buildSculptedBoulderGeometry(
+  radius: number,
+  detail: number,
+  variant = 0
+): THREE.BufferGeometry {
+  const geo = new THREE.IcosahedronGeometry(radius, detail);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const v = new THREE.Vector3();
+
+  // Deterministic per-variant cleavage plane orientations & phase shifts
+  const p1 = variant * 1.93 + 0.7;
+  const p2 = variant * 2.71 + 1.4;
+  const p3 = variant * 3.47 + 2.1;
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const len = v.length() || 1;
+    const nx = v.x / len;
+    const ny = v.y / len;
+    const nz = v.z / len;
+
+    // Multi-frequency geological ridges & stratified cleavage facets
+    const strata =
+      Math.sin(nx * 2.6 + p1) * Math.cos(nz * 2.4 - p2) * 0.14 +
+      Math.sin(ny * 4.4 + nx * 2.2 + p3) * 0.075 +
+      Math.cos((nx - nz) * 5.2 + ny * 3.1 + p1) * 0.055;
+
+    // Directional angular bevels (gives real stone shoulders instead of a lumpy potato)
+    const ledgeA = Math.abs(nx * 0.72 + ny * 0.55 - nz * 0.42);
+    const ledgeB = Math.abs(-nx * 0.48 + ny * 0.62 + nz * 0.62);
+    const chisel = -Math.max(0, ledgeA - 0.62) * 0.24 - Math.max(0, ledgeB - 0.64) * 0.2;
+
+    // Asymmetric elongation per variant
+    const stretchX = variant % 2 === 0 ? 1.08 : 0.96;
+    const stretchZ = variant % 2 === 0 ? 0.94 : 1.09;
+    let rScale = 1.0 + strata + chisel;
+    rScale = THREE.MathUtils.clamp(rScale, 0.72, 1.24);
+
+    let x = nx * radius * rScale * stretchX;
+    let y = ny * radius * rScale;
+    let z = nz * radius * rScale * stretchZ;
+
+    // Flatten & broaden underside slightly so the boulder anchors solidly in soil
+    if (ny < -0.18) {
+      const underT = Math.min(1, (-ny - 0.18) / 0.82);
+      y *= 1.0 - underT * 0.34;
+      x *= 1.0 + underT * 0.08;
+      z *= 1.0 + underT * 0.08;
+    }
+
+    pos.setXYZ(i, x, y, z);
+  }
+
+  geo.computeVertexNormals();
+  ensureAoUv(geo);
+  return geo;
+}
+
 function buildCabin(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
   const wallMat = createWoodPbrMat('#a8724e', quality, 3, 2, 0.86);
@@ -767,7 +846,7 @@ function buildWoodshed(quality: GraphicsQuality): THREE.Group {
   return g;
 }
 
-function buildPickupTruck(): THREE.Group {
+function buildPickupTruck(quality: GraphicsQuality): THREE.Group {
   const g = new THREE.Group();
   const bodyMat = new THREE.MeshStandardMaterial({ color: '#2b4f3e', roughness: 0.42, metalness: 0.35 });
   const glassMat = new THREE.MeshStandardMaterial({ color: '#9ec5d6', roughness: 0.15, metalness: 0.5 });
@@ -811,6 +890,8 @@ function buildPickupTruck(): THREE.Group {
     g.add(w);
   }
 
+  // Upgrade seamlessly to photorealistic CC0 crew-cab pickup GLB (procedural mesh acts as instant fallback)
+  attachPropModel(g, 'truck', quality);
   return g;
 }
 
@@ -884,30 +965,86 @@ function buildFence(length = 8.5): THREE.Group {
   return g;
 }
 
-function buildProtectedSapling(): THREE.Group {
-  const g = new THREE.Group();
-  const trunkMat = new THREE.MeshStandardMaterial({ color: '#613c29', roughness: 0.9 });
-  const folMat = new THREE.MeshStandardMaterial({ color: '#2f6c39', roughness: 0.82, flatShading: true });
-  const stakeMat = new THREE.MeshStandardMaterial({ color: '#e11d48', roughness: 0.5 });
+function hashSaplingSeed(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) % 2147483646 || 1;
+}
 
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.12, 2.2, 7), trunkMat);
-  trunk.position.y = 1.1;
+/**
+ * Young protected conifer: a slim leader with layered botanical needle whorls
+ * (cedar, fir, redwood, or larch) instead of stacked green cones.
+ */
+function buildProtectedSapling(
+  species: SpeciesId,
+  quality: GraphicsQuality,
+  seed: number,
+  windUniforms?: FoliageWindUniforms
+): THREE.Group {
+  const g = new THREE.Group();
+  const rand = makeRng(seed);
+  const spec = PNW_SPECIES[species] ?? PNW_SPECIES.western_red_cedar;
+  const resolved = spec.category === 'conifer' ? spec.id : 'western_red_cedar';
+
+  const barkMat = new THREE.MeshStandardMaterial({
+    color: spec.barkPrimary,
+    roughness: 0.88,
+    metalness: 0.02,
+  });
+  const leaderH = 2.15 + rand() * 0.55;
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.028, 0.075, leaderH, 8),
+    barkMat
+  );
+  trunk.position.y = leaderH * 0.5;
   trunk.castShadow = true;
+  trunk.receiveShadow = true;
   g.add(trunk);
 
-  for (let i = 0; i < 4; i++) {
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(1.15 - i * 0.22, 1.45, 7), folMat);
-    cone.position.y = 1.65 + i * 0.85;
-    cone.castShadow = true;
-    g.add(cone);
+  const ctx = createTreeBotanicalContext(resolved, 'conifer', quality, barkMat, windUniforms);
+  if (ctx) {
+    const whorls = 5;
+    for (let w = 0; w < whorls; w++) {
+      const t = w / (whorls - 1);
+      const y = leaderH * (0.22 + t * 0.7);
+      // Wide feathered skirt at the base, tightening into a narrow leader spire
+      const scale = THREE.MathUtils.lerp(0.5, 0.13, Math.pow(t, 1.15));
+      const hFrac = THREE.MathUtils.lerp(0.06, 0.98, t);
+      const spokes = t > 0.72 ? 1 : 2;
+      const spin = rand() * Math.PI * 2;
+      for (let s = 0; s < spokes; s++) {
+        const a = spin + (s / spokes) * Math.PI * 2 + t * 0.7;
+        const cluster = buildBotanicalFoliageCluster(
+          ctx,
+          scale,
+          rand,
+          false,
+          new THREE.Vector3(Math.cos(a), 0, Math.sin(a)),
+          hFrac
+        );
+        cluster.position.y = y;
+        g.add(cluster);
+      }
+    }
   }
 
-  // 3 small forestry protection stakes around the sapling
+  const stakeWood = new THREE.MeshStandardMaterial({ color: '#6d5340', roughness: 0.92 });
+  const flagMat = new THREE.MeshStandardMaterial({ color: '#e11d48', roughness: 0.55 });
   for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI * 2;
-    const stake = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.1, 6), stakeMat);
-    stake.position.set(Math.cos(a) * 1.35, 0.55, Math.sin(a) * 1.35);
+    const a = (i / 3) * Math.PI * 2 + 0.4;
+    const stake = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.95, 6), stakeWood);
+    stake.position.set(Math.cos(a) * 0.72, 0.42, Math.sin(a) * 0.72);
+    stake.rotation.z = Math.cos(a) * 0.08;
+    stake.rotation.x = -Math.sin(a) * 0.08;
+    stake.castShadow = true;
     g.add(stake);
+    const flag = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.07, 0.012), flagMat);
+    flag.position.set(Math.cos(a) * 0.78, 0.86, Math.sin(a) * 0.78);
+    flag.rotation.y = -a;
+    g.add(flag);
   }
 
   return g;
@@ -1136,7 +1273,11 @@ function buildStationWagon(): THREE.Group {
   return g;
 }
 
-function buildHazardMesh(h: HazardSpec, quality: GraphicsQuality): THREE.Group {
+function buildHazardMesh(
+  h: HazardSpec,
+  quality: GraphicsQuality,
+  windUniforms?: FoliageWindUniforms
+): THREE.Group {
   let g: THREE.Group;
   switch (h.type) {
     case 'cabin':
@@ -1164,7 +1305,7 @@ function buildHazardMesh(h: HazardSpec, quality: GraphicsQuality): THREE.Group {
       g = buildWoodshed(quality);
       break;
     case 'truck':
-      g = buildPickupTruck();
+      g = buildPickupTruck(quality);
       break;
     case 'gazebo':
       g = buildGazebo(quality);
@@ -1177,7 +1318,12 @@ function buildHazardMesh(h: HazardSpec, quality: GraphicsQuality): THREE.Group {
       break;
     case 'sapling':
     default:
-      g = buildProtectedSapling();
+      g = buildProtectedSapling(
+        h.species ?? 'western_red_cedar',
+        quality,
+        hashSaplingSeed(h.id),
+        windUniforms
+      );
       break;
   }
   g.position.set(h.x, 0, h.z);
@@ -1185,94 +1331,303 @@ function buildHazardMesh(h: HazardSpec, quality: GraphicsQuality): THREE.Group {
   return g;
 }
 
+type GroundCoverSprigId =
+  | 'ground_sword_fern'
+  | 'ground_salal'
+  | 'ground_bunchgrass'
+  | 'ground_wildflowers_coastal'
+  | 'ground_wildflowers_rockies';
+
+const groundCoverTexCache = new Map<
+  GroundCoverSprigId,
+  { map: THREE.Texture; normalMap: THREE.Texture }
+>();
+const groundCoverLoader = new THREE.TextureLoader();
+
+function getGroundCoverTextures(id: GroundCoverSprigId): {
+  map: THREE.Texture;
+  normalMap: THREE.Texture;
+} {
+  const existing = groundCoverTexCache.get(id);
+  if (existing) return existing;
+
+  const base = `./assets/foliage/${id}`;
+  const map = groundCoverLoader.load(`${base}/sprig.webp`);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = THREE.ClampToEdgeWrapping;
+  map.wrapT = THREE.ClampToEdgeWrapping;
+  map.anisotropy = 4;
+
+  const normalMap = groundCoverLoader.load(`${base}/nor.webp`);
+  normalMap.colorSpace = THREE.NoColorSpace;
+  normalMap.wrapS = THREE.ClampToEdgeWrapping;
+  normalMap.wrapT = THREE.ClampToEdgeWrapping;
+  normalMap.anisotropy = 4;
+
+  const pair = { map, normalMap };
+  groundCoverTexCache.set(id, pair);
+  return pair;
+}
+
+function createGroundCoverMaterial(
+  id: GroundCoverSprigId,
+  quality: GraphicsQuality,
+  windUniforms: FoliageWindUniforms,
+  opts: {
+    roughness?: number;
+    normalScale?: number;
+    alphaTest?: number;
+    swayScale?: number;
+    sssStrength?: number;
+    baseAo?: number;
+    tint?: string;
+  } = {}
+): THREE.MeshStandardMaterial {
+  const { map, normalMap } = getGroundCoverTextures(id);
+  const ns = (opts.normalScale ?? 0.58) * (quality === 'high' ? 1.0 : 0.72);
+  const mat = new THREE.MeshStandardMaterial({
+    map,
+    normalMap,
+    normalScale: new THREE.Vector2(ns, ns),
+    color: new THREE.Color(opts.tint ?? '#ffffff'),
+    roughness: opts.roughness ?? 0.76,
+    metalness: 0.0,
+    alphaTest: opts.alphaTest ?? 0.34,
+    side: THREE.DoubleSide,
+    envMapIntensity: quality === 'high' ? 0.42 : 0.65,
+  });
+  applyGroundCoverShader(mat, windUniforms, {
+    swayScale: opts.swayScale ?? 1.0,
+    sssStrength: opts.sssStrength ?? 0.36,
+    baseAo: opts.baseAo ?? 0.54,
+  });
+  return mat;
+}
+
+/**
+ * Helper: appends a softly cupped, arched botanical sprig card anchored at (baseX, baseY, baseZ)
+ * with outward tilt, dome-biased normals, and clean UV mapping [uMin..uMax] x [0..1].
+ */
+function appendCurvedPlantCard(
+  positions: number[],
+  normals: number[],
+  uvs: number[],
+  indices: number[],
+  opts: {
+    yaw: number;
+    width: number;
+    height: number;
+    leanOut: number;
+    archDroop: number;
+    cupDepth: number;
+    baseRadius?: number;
+    baseY?: number;
+    uMin?: number;
+    uMax?: number;
+    segsV?: number;
+    segsU?: number;
+  }
+): void {
+  const segsV = opts.segsV ?? 4;
+  const segsU = opts.segsU ?? 2;
+  const uMin = opts.uMin ?? 0.0;
+  const uMax = opts.uMax ?? 1.0;
+  const baseRadius = opts.baseRadius ?? 0.0;
+  const baseY = opts.baseY ?? -0.04;
+  const cosY = Math.cos(opts.yaw);
+  const sinY = Math.sin(opts.yaw);
+  const baseIdx = positions.length / 3;
+
+  for (let iv = 0; iv <= segsV; iv++) {
+    const tv = iv / segsV;
+    // Outward arch along frond/stem height + graceful tip droop
+    const rOut = baseRadius + Math.pow(tv, 1.15) * opts.leanOut;
+    const yCenter = baseY + tv * opts.height - tv * tv * opts.archDroop;
+
+    for (let iu = 0; iu <= segsU; iu++) {
+      const tu = iu / segsU;
+      const sx = (tu - 0.5) * 2.0; // -1..+1 across card width
+      const lx = sx * (opts.width * 0.5);
+      // Gentle lateral cupping so leaves & clumps have genuine 3D volume
+      const cup = (1.0 - sx * sx) * opts.cupDepth * Math.sin(tv * Math.PI);
+      const lz = rOut + cup;
+
+      const wx = lx * cosY + lz * sinY;
+      const wz = -lx * sinY + lz * cosY;
+      const wy = yCenter - sx * sx * opts.cupDepth * 0.35;
+
+      positions.push(wx, wy, wz);
+
+      // Upward-and-outward dome normal so crossed cards shade smoothly like real volume
+      const nOut = 0.42 * tv + 0.16;
+      const nx = (sx * 0.25 * cosY + nOut * sinY);
+      const nz = (-sx * 0.25 * sinY + nOut * cosY);
+      const ny = 0.88;
+      const nLen = Math.hypot(nx, ny, nz) || 1;
+      normals.push(nx / nLen, ny / nLen, nz / nLen);
+
+      uvs.push(uMin + (uMax - uMin) * tu, tv);
+    }
+  }
+
+  const rowStride = segsU + 1;
+  for (let iv = 0; iv < segsV; iv++) {
+    for (let iu = 0; iu < segsU; iu++) {
+      const a = baseIdx + iv * rowStride + iu;
+      const b = a + 1;
+      const c = a + rowStride;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+}
+
 function buildSwordFernGeometry(): THREE.BufferGeometry {
-  // 7 arched tapering PNW sword-fern fronds radiating 360 degrees
-  const frondCount = 7;
-  const segs = 4;
+  // 8 gracefully arched, pinnate PNW sword-fern fronds radiating 360° (inner + outer whorl)
   const positions: number[] = [];
   const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
 
+  const frondCount = 8;
   for (let f = 0; f < frondCount; f++) {
-    const yaw = (f / frondCount) * Math.PI * 2 + (f % 2) * 0.22;
+    const isInner = f % 2 === 1;
+    const yaw = (f / frondCount) * Math.PI * 2 + (isInner ? 0.14 : -0.06);
+    const len = isInner ? 0.92 + (f % 3) * 0.08 : 1.12 + (f % 3) * 0.11;
+    const archH = isInner ? 0.64 : 0.48;
+    const frondHalfW = isInner ? 0.28 : 0.32;
+    const segsV = 5;
+    const segsU = 2;
     const cosY = Math.cos(yaw);
     const sinY = Math.sin(yaw);
-    const len = 1.05 + (f % 3) * 0.14;
-    const archH = 0.42 + (f % 2) * 0.12;
+    const baseIdx = positions.length / 3;
 
-    const pt = (t: number, side: number) => {
-      const r = t * len;
-      const y = Math.sin(t * Math.PI * 0.82) * archH + 0.06;
-      const halfW = Math.sin(t * Math.PI) * 0.22;
-      const lx = r;
-      const lz = side * halfW;
-      return [lx * cosY - lz * sinY, y, lx * sinY + lz * cosY];
-    };
+    for (let iv = 0; iv <= segsV; iv++) {
+      const t = iv / segsV;
+      const r = 0.05 + t * len;
+      const y = -0.03 + Math.sin(t * Math.PI * 0.82) * archH;
 
-    for (let s = 0; s < segs; s++) {
-      const t0 = s / segs;
-      const t1 = (s + 1) / segs;
-      const p0L = pt(t0, -1);
-      const p0R = pt(t0, 1);
-      const p1L = pt(t1, -1);
-      const p1R = pt(t1, 1);
+      for (let iu = 0; iu <= segsU; iu++) {
+        const tu = iu / segsU;
+        const sx = (tu - 0.5) * 2.0; // -1..+1
+        const sideW = sx * frondHalfW;
+        // Subtle V-trough along the central fern rachis
+        const vCup = Math.abs(sx) * 0.055 * Math.sin(t * Math.PI);
 
-      // Triangle 1
-      positions.push(...p0L, ...p1L, ...p1R);
-      // Triangle 2
-      positions.push(...p0L, ...p1R, ...p0R);
-      for (let k = 0; k < 6; k++) normals.push(0, 1, 0);
+        const wx = r * cosY - sideW * sinY;
+        const wz = r * sinY + sideW * cosY;
+        const wy = y + vCup;
+
+        positions.push(wx, wy, wz);
+        // Upward-biased volumetric frond normal
+        const nx = cosY * (0.28 * t) - sinY * (sx * 0.22);
+        const nz = sinY * (0.28 * t) + cosY * (sx * 0.22);
+        const ny = 0.92;
+        const nLen = Math.hypot(nx, ny, nz) || 1;
+        normals.push(nx / nLen, ny / nLen, nz / nLen);
+
+        // Crop U tightly to the centered fern frond in ground-sword-fern.jpg (u in 0.26..0.74)
+        uvs.push(0.26 + 0.48 * tu, 0.01 + 0.98 * t);
+      }
+    }
+
+    const rowStride = segsU + 1;
+    for (let iv = 0; iv < segsV; iv++) {
+      for (let iu = 0; iu < segsU; iu++) {
+        const a = baseIdx + iv * rowStride + iu;
+        const b = a + 1;
+        const c = a + rowStride;
+        const d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
     }
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geo.computeVertexNormals();
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
+}
+
+function buildSalalShrubGeometry(): THREE.BufferGeometry {
+  // 4 cupped, splayed evergreen Salal shrub sprigs forming a full 3D woodland bush
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const cards = [
+    { yaw: 0.12, width: 0.98, height: 0.78, leanOut: 0.26, archDroop: 0.12, cupDepth: 0.14, baseRadius: 0.06 },
+    { yaw: 1.72, width: 0.94, height: 0.74, leanOut: 0.24, archDroop: 0.11, cupDepth: 0.13, baseRadius: 0.05 },
+    { yaw: 3.31, width: 0.96, height: 0.80, leanOut: 0.25, archDroop: 0.13, cupDepth: 0.14, baseRadius: 0.06 },
+    { yaw: 4.86, width: 0.86, height: 0.84, leanOut: 0.14, archDroop: 0.07, cupDepth: 0.11, baseRadius: 0.03 },
+  ];
+  for (const c of cards) {
+    appendCurvedPlantCard(positions, normals, uvs, indices, { ...c, baseY: -0.05, segsV: 3, segsU: 2 });
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
   return geo;
 }
 
 function buildBunchgrassGeometry(): THREE.BufferGeometry {
-  // 11 slender upright-arching dry bunchgrass blades (East Kootenay bluebunch wheatgrass & fescue)
-  const bladeCount = 11;
-  const segs = 3;
+  // 3 gently cupped crossed-star cards of fine East Kootenay Bluebunch Wheatgrass & fescue
   const positions: number[] = [];
   const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
 
-  for (let f = 0; f < bladeCount; f++) {
-    const yaw = (f / bladeCount) * Math.PI * 2 + (f % 3) * 0.19;
-    const cosY = Math.cos(yaw);
-    const sinY = Math.sin(yaw);
-    const leanR = 0.28 + (f % 4) * 0.12;
-    const bladeH = 0.48 + (f % 3) * 0.16;
-    const baseOff = 0.08 + (f % 2) * 0.07;
-
-    const pt = (t: number, side: number) => {
-      const r = baseOff + t * t * leanR;
-      const y = t * bladeH - t * t * 0.08;
-      const halfW = (1 - t * 0.88) * 0.048;
-      const lx = r;
-      const lz = side * halfW;
-      return [lx * cosY - lz * sinY, y, lx * sinY + lz * cosY];
-    };
-
-    for (let s = 0; s < segs; s++) {
-      const t0 = s / segs;
-      const t1 = (s + 1) / segs;
-      const p0L = pt(t0, -1);
-      const p0R = pt(t0, 1);
-      const p1L = pt(t1, -1);
-      const p1R = pt(t1, 1);
-
-      positions.push(...p0L, ...p1L, ...p1R);
-      positions.push(...p0L, ...p1R, ...p0R);
-      for (let k = 0; k < 6; k++) normals.push(0, 1, 0);
-    }
+  for (let i = 0; i < 3; i++) {
+    const yaw = (i / 3) * Math.PI + (i === 1 ? 0.12 : -0.08);
+    appendCurvedPlantCard(positions, normals, uvs, indices, {
+      yaw,
+      width: 0.95 + (i % 2) * 0.12,
+      height: 0.74 + (i % 3) * 0.08,
+      leanOut: 0.11,
+      archDroop: 0.08,
+      cupDepth: 0.11,
+      baseRadius: 0.0,
+      baseY: -0.06,
+      segsV: 3,
+      segsU: 2,
+    });
   }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-  geo.computeVertexNormals();
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  return geo;
+}
+
+function buildWildflowerClumpGeometry(): THREE.BufferGeometry {
+  // 3 softly cupped, staggered wildflower clump cards (replaces floating dodecahedron balls!)
+  const positions: number[] = [];
+  const normals: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const cards = [
+    { yaw: 0.05, width: 0.82, height: 0.74, leanOut: 0.08, archDroop: 0.05, cupDepth: 0.09, baseRadius: 0.0 },
+    { yaw: 1.12, width: 0.76, height: 0.68, leanOut: 0.10, archDroop: 0.06, cupDepth: 0.08, baseRadius: 0.02 },
+    { yaw: 2.18, width: 0.80, height: 0.71, leanOut: 0.09, archDroop: 0.05, cupDepth: 0.09, baseRadius: 0.01 },
+  ];
+  for (const c of cards) {
+    appendCurvedPlantCard(positions, normals, uvs, indices, { ...c, baseY: -0.06, segsV: 3, segsU: 2 });
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
   return geo;
 }
 
@@ -1585,10 +1940,8 @@ export function buildEnvironment(
     group.add(drive);
 
     // Sensible rural driveway boundaries: low river-cobble border stones & weathered cedar edge bollards
-    const curbStoneGeo = new THREE.DodecahedronGeometry(0.32, quality === 'high' ? 1 : 0);
-    ensureAoUv(curbStoneGeo);
-    const curbStoneMat = createStonePbrMat('#8f958d', quality, 1, 1);
-    if (quality !== 'high') curbStoneMat.flatShading = true;
+    const curbStoneGeo = buildSculptedBoulderGeometry(0.34, quality === 'high' ? 2 : 1, 2);
+    const curbStoneMat = createGroundedRockMat('#989e95', quality, contract.site, contract.weather, 1, 1);
     const maxCurbStones = quality === 'high' ? 88 : 56;
     const curbInst = new THREE.InstancedMesh(curbStoneGeo, curbStoneMat, maxCurbStones);
     curbInst.castShadow = true;
@@ -1790,10 +2143,8 @@ export function buildEnvironment(
     const bridgeSlope = getMistyCreekSlope(bridgeX);
     const bridgeHalfW = getMistyCreekHalfWidth(bridgeX);
 
-    const bankStoneGeo = new THREE.DodecahedronGeometry(0.55, quality === 'high' ? 1 : 0);
-    ensureAoUv(bankStoneGeo);
-    const bankStoneMat = createStonePbrMat('#8b968a', quality, 1, 1);
-    if (quality !== 'high') bankStoneMat.flatShading = true;
+    const bankStoneGeo = buildSculptedBoulderGeometry(0.56, quality === 'high' ? 2 : 1, 1);
+    const bankStoneMat = createGroundedRockMat('#919c8f', quality, contract.site, contract.weather, 1, 1);
     const maxBankStones = quality === 'high' ? 165 : 105;
     const bankStoneInst = new THREE.InstancedMesh(bankStoneGeo, bankStoneMat, maxBankStones);
     bankStoneInst.castShadow = true;
@@ -1940,10 +2291,11 @@ export function buildEnvironment(
     group.add(waterMesh);
 
     // 2) Sun-bleached coastal granite outcrops lining the headland bluff rim
-    const outcropGeo = new THREE.DodecahedronGeometry(1.8, quality === 'high' ? 2 : 1);
-    ensureAoUv(outcropGeo);
-    const outcropMat = createStonePbrMat('#b4b0a2', quality, 2, 2);
-    if (quality !== 'high') outcropMat.flatShading = true;
+    const outcropGeos = [
+      buildSculptedBoulderGeometry(1.85, quality === 'high' ? 2 : 1, 0),
+      buildSculptedBoulderGeometry(1.85, quality === 'high' ? 2 : 1, 1),
+    ];
+    const outcropMat = createGroundedRockMat('#b4b0a2', quality, contract.site, contract.weather, 2, 2);
     const outcropSpots: Array<[number, number, number, number]> = [
       [22.5, 13.5, 1.5, 0.9],
       [18.5, 22.0, 2.0, 1.1],
@@ -1953,12 +2305,13 @@ export function buildEnvironment(
       [28.0, 19.5, 2.4, 1.3],
       [14.0, 29.0, 2.3, 1.2],
     ];
-    for (const [ox, oz, sx, sy] of outcropSpots) {
-      const rock = new THREE.Mesh(outcropGeo, outcropMat);
+    for (let oi = 0; oi < outcropSpots.length; oi++) {
+      const [ox, oz, sx, sy] = outcropSpots[oi];
+      const rock = new THREE.Mesh(outcropGeos[oi % outcropGeos.length], outcropMat);
       const oy = getTerrainHeight(ox, oz, contract.site);
-      rock.position.set(ox, oy + sy * 0.45, oz);
+      rock.position.set(ox, oy + sy * 0.22, oz);
       rock.scale.set(sx, sy, sx * (0.75 + rand() * 0.4));
-      rock.rotation.set((rand() - 0.5) * 0.25, rand() * Math.PI * 2, (rand() - 0.5) * 0.25);
+      rock.rotation.set((rand() - 0.5) * 0.16, rand() * Math.PI * 2, (rand() - 0.5) * 0.16);
       rock.castShadow = true;
       rock.receiveShadow = true;
       group.add(rock);
@@ -2123,10 +2476,11 @@ export function buildEnvironment(
     }
 
     // 3) Pale sun-warmed Rockies limestone outcrops along the rolling foothill benches
-    const outcropGeo = new THREE.DodecahedronGeometry(1.9, quality === 'high' ? 2 : 1);
-    ensureAoUv(outcropGeo);
-    const outcropMat = createStonePbrMat('#d2ccc0', quality, 2, 2);
-    if (quality !== 'high') outcropMat.flatShading = true;
+    const outcropGeos = [
+      buildSculptedBoulderGeometry(1.9, quality === 'high' ? 2 : 1, 0),
+      buildSculptedBoulderGeometry(1.9, quality === 'high' ? 2 : 1, 2),
+    ];
+    const outcropMat = createGroundedRockMat('#d2ccc0', quality, contract.site, contract.weather, 2, 2);
     const outcropSpots: Array<[number, number, number, number]> = [
       [-23.5, -16.5, 1.9, 1.0],
       [22.5, -14.5, 2.1, 1.15],
@@ -2135,12 +2489,13 @@ export function buildEnvironment(
       [8.5, -24.0, 2.3, 1.2],
       [-6.5, 26.5, 1.8, 0.9],
     ];
-    for (const [ox, oz, sx, sy] of outcropSpots) {
-      const rock = new THREE.Mesh(outcropGeo, outcropMat);
+    for (let oi = 0; oi < outcropSpots.length; oi++) {
+      const [ox, oz, sx, sy] = outcropSpots[oi];
+      const rock = new THREE.Mesh(outcropGeos[oi % outcropGeos.length], outcropMat);
       const oy = getTerrainHeight(ox, oz, contract.site);
-      rock.position.set(ox, oy + sy * 0.42, oz);
+      rock.position.set(ox, oy + sy * 0.22, oz);
       rock.scale.set(sx, sy, sx * (0.75 + rand() * 0.4));
-      rock.rotation.set((rand() - 0.5) * 0.22, rand() * Math.PI * 2, (rand() - 0.5) * 0.22);
+      rock.rotation.set((rand() - 0.5) * 0.16, rand() * Math.PI * 2, (rand() - 0.5) * 0.16);
       rock.castShadow = true;
       rock.receiveShadow = true;
       group.add(rock);
@@ -2212,6 +2567,22 @@ export function buildEnvironment(
     }
   }
 
+  // Shared GPU wind for ground cover and protected sapling foliage
+  const groundWindUniforms: FoliageWindUniforms = {
+    uTime: { value: 0 },
+    uWindStrength: { value: contract.windSpeed },
+    uWindDir: {
+      value: new THREE.Vector2(Math.cos(contract.windAngle), Math.sin(contract.windAngle)),
+    },
+    uSunDir: { value: sunDir.clone().normalize() },
+    uSunColor: { value: new THREE.Color(sunColor) },
+  };
+  effectUpdaters.push((elapsed, windSpeed, windAngle) => {
+    groundWindUniforms.uTime.value = elapsed;
+    groundWindUniforms.uWindStrength.value = windSpeed;
+    groundWindUniforms.uWindDir.value.set(Math.cos(windAngle), Math.sin(windAngle));
+  });
+
   // 5. Place Hazards & Subtle Warning Rings
   const hazardGroups = new Map<string, THREE.Group>();
   const hazardWarningRings: THREE.Mesh[] = [];
@@ -2219,7 +2590,7 @@ export function buildEnvironment(
   const sceneOccluders: SceneOccluder[] = [];
 
   for (const h of contract.hazards) {
-    const hGroup = buildHazardMesh(h, quality);
+    const hGroup = buildHazardMesh(h, quality, groundWindUniforms);
     group.add(hGroup);
     hazardGroups.set(h.id, hGroup);
     sceneOccluders.push({
@@ -2243,69 +2614,75 @@ export function buildEnvironment(
     hazardWarningRings.push(ring);
   }
 
-  // 6. Instanced Ground Undergrowth (Dry Bunchgrass in Kootenay Rockies, Sword Ferns on the coast)
+  // 6. Instanced Botanical Ground Cover (Alpha-tested curved foliage sprigs with GPU wind sway & SSS)
   const densityMult = quality === 'high' ? 1.45 : 1.0;
+  const isRockies = contract.site === 'kootenay_rockies';
   const riparianReserve = contract.site === 'misty_creek' ? Math.round(58 * densityMult) : 0;
-  const baseFernCount = Math.round((contract.site === 'kootenay_rockies' ? 320 : 260) * densityMult);
+  const baseFernCount = Math.round((isRockies ? 340 : 280) * densityMult);
   const fernCount = baseFernCount + riparianReserve;
-  const fernFrondGeo =
-    contract.site === 'kootenay_rockies' ? buildBunchgrassGeometry() : buildSwordFernGeometry();
-  const fernMat = new THREE.MeshStandardMaterial({
-    color: quality === 'high' ? '#c5d6b8' : '#ffffff',
-    roughness: 0.88,
-    envMapIntensity: quality === 'high' ? 0.34 : 1.0,
-    side: THREE.DoubleSide,
-    flatShading: quality !== 'high',
-  });
+  const fernFrondGeo = isRockies ? buildBunchgrassGeometry() : buildSwordFernGeometry();
+  const fernMat = createGroundCoverMaterial(
+    isRockies ? 'ground_bunchgrass' : 'ground_sword_fern',
+    quality,
+    groundWindUniforms,
+    {
+      roughness: isRockies ? 0.86 : 0.70,
+      normalScale: isRockies ? 0.52 : 0.64,
+      alphaTest: isRockies ? 0.32 : 0.34,
+      swayScale: isRockies ? 1.15 : 0.88,
+      sssStrength: isRockies ? 0.16 : 0.44,
+      baseAo: isRockies ? 0.60 : 0.68,
+      tint: isRockies ? '#c2b688' : '#e6f2dc',
+    }
+  );
   const fernInst = new THREE.InstancedMesh(fernFrondGeo, fernMat, fernCount);
   fernInst.receiveShadow = true;
 
-  const dummy = new THREE.Object3D();
-  const fernColor = new THREE.Color();
-  let fIdx = 0;
-  for (let tries = 0; tries < Math.round(700 * densityMult) && fIdx < baseFernCount; tries++) {
-    const angle = rand() * Math.PI * 2;
-    const dist = 5.5 + rand() * 34;
-    const fx = Math.cos(angle) * dist;
-    const fz = Math.sin(angle) * dist;
-
-    // Avoid spawning inside trees, driveway center, misty creek water, town street/pond, or hazards
+  const isGroundCoverBlocked = (fx: number, fz: number, allowTownLawn = false): boolean => {
     const onDriveway = Boolean(homesteadDriveway && homesteadDriveway.isOnDriveway(fx, fz, 0.75));
     const inCreek = contract.site === 'misty_creek' && isInMistyCreek(fx, fz, 0.95);
     const onTownRoad = contract.site === 'coastal_town' && fz > 11.2 && fz < 22.0;
     const inTownPond = contract.site === 'coastal_town' && Math.hypot((fx + 11.5) / 5.2, (fz + 9.5) / 4.2) < 1.05;
-    const inTownCentralLawn = contract.site === 'coastal_town' && Math.hypot(fx, fz) < 11.5;
-    const tooClose =
+    const inTownCentralLawn = !allowTownLawn && contract.site === 'coastal_town' && Math.hypot(fx, fz) < 11.5;
+    return (
       onDriveway ||
       inCreek ||
       onTownRoad ||
       inTownPond ||
       inTownCentralLawn ||
-      contract.trees.some((t) => Math.hypot(t.x - fx, t.z - fz) < 2.2) ||
-      contract.hazards.some((h) => Math.hypot(h.x - fx, h.z - fz) < h.radius + 1.1);
-    if (tooClose) continue;
+      contract.trees.some((t) => Math.hypot(t.x - fx, t.z - fz) < 2.15) ||
+      contract.hazards.some((h) => Math.hypot(h.x - fx, h.z - fz) < h.radius + 1.05)
+    );
+  };
+
+  const dummy = new THREE.Object3D();
+  const fernColor = new THREE.Color();
+  let fIdx = 0;
+  for (let tries = 0; tries < Math.round(740 * densityMult) && fIdx < baseFernCount; tries++) {
+    const angle = rand() * Math.PI * 2;
+    const dist = 5.2 + rand() * 34;
+    const fx = Math.cos(angle) * dist;
+    const fz = Math.sin(angle) * dist;
+    if (isGroundCoverBlocked(fx, fz)) continue;
 
     const fy = getTerrainHeight(fx, fz, contract.site);
-    const s = 0.72 + rand() * 0.85;
-    dummy.position.set(fx, fy + 0.02, fz);
+    const s = isRockies ? 0.78 + rand() * 0.82 : 0.76 + rand() * 0.78;
+    dummy.position.set(fx, fy, fz);
     dummy.rotation.set((rand() - 0.5) * 0.14, rand() * Math.PI * 2, (rand() - 0.5) * 0.14);
-    dummy.scale.set(s, s * (0.85 + rand() * 0.4), s);
+    dummy.scale.set(s, s * (0.86 + rand() * 0.34), s);
     dummy.updateMatrix();
     fernInst.setMatrixAt(fIdx, dummy.matrix);
 
-    if (contract.site === 'kootenay_rockies') {
-      // Sun-cured golden bunchgrass & dry interior sage tufts
-      if (rand() > 0.32) {
-        fernColor.setHSL(0.12 + (rand() - 0.5) * 0.035, 0.36 + rand() * 0.14, 0.34 + rand() * 0.11);
+    if (isRockies) {
+      // Sun-cured golden ochre & dusty sage bunchgrass variation (keeps straw richly colored without HDR blowout)
+      if (rand() > 0.34) {
+        fernColor.setHSL(0.11 + (rand() - 0.5) * 0.03, 0.32 + rand() * 0.16, 0.62 + rand() * 0.16);
       } else {
-        fernColor.setHSL(0.24 + (rand() - 0.5) * 0.04, 0.18 + rand() * 0.1, 0.3 + rand() * 0.08);
+        fernColor.setHSL(0.24 + (rand() - 0.5) * 0.04, 0.22 + rand() * 0.12, 0.56 + rand() * 0.15);
       }
     } else {
-      fernColor.setHSL(
-        0.31 + (rand() - 0.5) * 0.05,
-        0.46 + rand() * 0.14,
-        (quality === 'high' ? 0.15 : 0.20) + rand() * 0.08
-      );
+      // Rich sunlit emerald to lush woodland olive sword-fern variation
+      fernColor.setHSL(0.29 + (rand() - 0.5) * 0.04, 0.20 + rand() * 0.14, 0.88 + rand() * 0.12);
     }
     fernInst.setColorAt(fIdx, fernColor);
     fIdx++;
@@ -2328,17 +2705,13 @@ export function buildEnvironment(
         if (contract.trees.some((t) => Math.hypot(t.x - fx, t.z - fz) < 2.0)) continue;
         if (contract.hazards.some((h) => Math.hypot(h.x - fx, h.z - fz) < h.radius + 0.9)) continue;
         const fy = getTerrainHeight(fx, fz, contract.site);
-        const s = 0.8 + rand() * 0.78;
-        dummy.position.set(fx, fy + 0.02, fz);
+        const s = 0.84 + rand() * 0.74;
+        dummy.position.set(fx, fy, fz);
         dummy.rotation.set((rand() - 0.5) * 0.14, rand() * Math.PI * 2, (rand() - 0.5) * 0.14);
-        dummy.scale.set(s, s * (0.9 + rand() * 0.35), s);
+        dummy.scale.set(s, s * (0.9 + rand() * 0.32), s);
         dummy.updateMatrix();
         fernInst.setMatrixAt(fIdx, dummy.matrix);
-        fernColor.setHSL(
-          0.32 + (rand() - 0.5) * 0.04,
-          0.5 + rand() * 0.14,
-          (quality === 'high' ? 0.14 : 0.19) + rand() * 0.07
-        );
+        fernColor.setHSL(0.30 + (rand() - 0.5) * 0.035, 0.22 + rand() * 0.14, 0.88 + rand() * 0.12);
         fernInst.setColorAt(fIdx, fernColor);
         fIdx++;
       }
@@ -2349,34 +2722,90 @@ export function buildEnvironment(
   if (fernInst.instanceColor) fernInst.instanceColor.needsUpdate = true;
   group.add(fernInst);
 
-  // 6b. Coastal Wildflowers / Lupine & Clover accents
-  const flowerCount = Math.round(85 * densityMult);
-  const flowerGeo = new THREE.DodecahedronGeometry(0.14, 0);
-  flowerGeo.translate(0, 0.22, 0);
-  const flowerMat = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.75, flatShading: quality !== 'high' });
-  const flowerInst = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
-  const flowerPalette =
-    contract.site === 'kootenay_rockies'
-      ? ['#facc15', '#fde047', '#eab308', '#c4b5fd', '#fef08a'] // arrowleaf balsamroot & mountain lupine
-      : ['#e9d5ff', '#fef08a', '#f5f5f4', '#c4b5fd', '#fde68a'];
-  let flIdx = 0;
-  for (let tries = 0; tries < Math.round(240 * densityMult) && flIdx < flowerCount; tries++) {
+  // 6a. Broadleaf Woodland Shrubs (Pacific Salal on coastal sites, dry sage/kinnikinnick shrubs in Kootenay Rockies)
+  const shrubCount = Math.round((isRockies ? 78 : contract.site === 'coastal_town' ? 68 : 135) * densityMult);
+  const shrubGeo = buildSalalShrubGeometry();
+  const shrubMat = createGroundCoverMaterial('ground_salal', quality, groundWindUniforms, {
+    roughness: isRockies ? 0.80 : 0.66,
+    normalScale: 0.62,
+    alphaTest: 0.35,
+    swayScale: 0.62,
+    sssStrength: 0.28,
+    baseAo: 0.52,
+    tint: isRockies ? '#b8bfa0' : '#f2f6ec',
+  });
+  const shrubInst = new THREE.InstancedMesh(shrubGeo, shrubMat, shrubCount);
+  shrubInst.receiveShadow = true;
+  let shIdx = 0;
+  for (let tries = 0; tries < Math.round(420 * densityMult) && shIdx < shrubCount; tries++) {
     const a = rand() * Math.PI * 2;
-    const d = 6 + rand() * 26;
+    const d = (contract.site === 'coastal_town' ? 12.5 : 6.2) + rand() * 33;
+    const sx = Math.cos(a) * d;
+    const sz = Math.sin(a) * d;
+    if (isGroundCoverBlocked(sx, sz)) continue;
+
+    const sy = getTerrainHeight(sx, sz, contract.site);
+    const sc = isRockies ? 0.58 + rand() * 0.55 : 0.72 + rand() * 0.72;
+    dummy.position.set(sx, sy, sz);
+    dummy.rotation.set((rand() - 0.5) * 0.12, rand() * Math.PI * 2, (rand() - 0.5) * 0.12);
+    dummy.scale.set(sc, sc * (0.85 + rand() * 0.35), sc);
+    dummy.updateMatrix();
+    shrubInst.setMatrixAt(shIdx, dummy.matrix);
+    if (isRockies) {
+      fernColor.setHSL(0.24 + (rand() - 0.5) * 0.04, 0.16 + rand() * 0.1, 0.76 + rand() * 0.16);
+    } else {
+      fernColor.setHSL(0.30 + (rand() - 0.5) * 0.045, 0.22 + rand() * 0.14, 0.78 + rand() * 0.18);
+    }
+    shrubInst.setColorAt(shIdx, fernColor);
+    shIdx++;
+  }
+  shrubInst.count = shIdx;
+  shrubInst.instanceMatrix.needsUpdate = true;
+  if (shrubInst.instanceColor) shrubInst.instanceColor.needsUpdate = true;
+  group.add(shrubInst);
+
+  // 6b. Rooted Botanical Wildflower Clumps (Oxeye daisies, lupines & buttercups on coast; Arrowleaf Balsamroot & mountain lupine in Rockies)
+  const flowerCount = Math.round((isRockies ? 115 : 95) * densityMult);
+  const flowerGeo = buildWildflowerClumpGeometry();
+  const flowerMat = createGroundCoverMaterial(
+    isRockies ? 'ground_wildflowers_rockies' : 'ground_wildflowers_coastal',
+    quality,
+    groundWindUniforms,
+    {
+      roughness: 0.80,
+      normalScale: 0.5,
+      alphaTest: 0.34,
+      swayScale: 1.05,
+      sssStrength: isRockies ? 0.14 : 0.18,
+      baseAo: 0.62,
+      tint: isRockies ? '#d2ccba' : '#dbd8d0',
+    }
+  );
+  const flowerInst = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
+  flowerInst.receiveShadow = true;
+  let flIdx = 0;
+  for (let tries = 0; tries < Math.round(320 * densityMult) && flIdx < flowerCount; tries++) {
+    const a = rand() * Math.PI * 2;
+    const d = 5.8 + rand() * 28;
     const x = Math.cos(a) * d;
     const z = Math.sin(a) * d;
-    if (homesteadDriveway && homesteadDriveway.isOnDriveway(x, z, 0.75)) continue;
-    if (contract.site === 'misty_creek' && isInMistyCreek(x, z, 1.0)) continue;
-    if (contract.site === 'coastal_town' && z > 11.2 && z < 22.0) continue;
-    if (contract.site === 'coastal_town' && Math.hypot((x + 11.5) / 5.2, (z + 9.5) / 4.2) < 1.0) continue;
-    if (contract.hazards.some((h) => Math.hypot(h.x - x, h.z - z) < h.radius + 1.0)) continue;
+    if (isGroundCoverBlocked(x, z, true)) continue;
+    // Keep tidy inner lawn borders on Coastal Town sparse so flowers cluster along edges & garden beds
+    if (contract.site === 'coastal_town' && Math.hypot(x, z) < 7.5 && rand() < 0.72) continue;
+
     const y = getTerrainHeight(x, z, contract.site);
+    const sc = isRockies ? 0.72 + rand() * 0.58 : 0.68 + rand() * 0.56;
     dummy.position.set(x, y, z);
-    dummy.rotation.set(0, rand() * Math.PI * 2, 0);
-    dummy.scale.setScalar(0.75 + rand() * 0.7);
+    dummy.rotation.set((rand() - 0.5) * 0.1, rand() * Math.PI * 2, (rand() - 0.5) * 0.1);
+    dummy.scale.set(sc, sc * (0.88 + rand() * 0.3), sc);
     dummy.updateMatrix();
     flowerInst.setMatrixAt(flIdx, dummy.matrix);
-    fernColor.set(flowerPalette[Math.floor(rand() * flowerPalette.length)]);
+    // Gentle warm/cool organic tint variation while preserving vivid petal saturation (no HDR blowout)
+    fernColor.setHSL(
+      0.13 + (rand() - 0.5) * 0.08,
+      isRockies ? 0.12 + rand() * 0.10 : 0.08 + rand() * 0.08,
+      isRockies ? 0.70 + rand() * 0.14 : 0.76 + rand() * 0.14
+    );
     flowerInst.setColorAt(flIdx, fernColor);
     flIdx++;
   }
@@ -2385,44 +2814,114 @@ export function buildEnvironment(
   if (flowerInst.instanceColor) flowerInst.instanceColor.needsUpdate = true;
   group.add(flowerInst);
 
-  // 7. Regional Boulders (pale Rockies limestone in Kootenays, mossy granite on the coast)
-  const rockGeo = new THREE.DodecahedronGeometry(1.0, quality === 'high' ? 1 : 0);
-  ensureAoUv(rockGeo);
-  const rockMat = createStonePbrMat(
-    contract.site === 'kootenay_rockies' ? '#cbc5b6' : '#96a095',
+  // 7. Sculpted Grounded Regional Boulders (2 geological variants + world-space strata, moss cap & soil-line grounding)
+  const rockDetail = quality === 'high' ? 2 : 1;
+  const rockGeoA = buildSculptedBoulderGeometry(1.0, rockDetail, 0);
+  const rockGeoB = buildSculptedBoulderGeometry(1.0, rockDetail, 1);
+  const rockMat = createGroundedRockMat(
+    isRockies ? '#d2ccbe' : '#9ba499',
     quality,
+    contract.site,
+    contract.weather,
     1,
     1
   );
-  if (quality !== 'high') rockMat.flatShading = true;
-  const rockCount = Math.round((contract.site === 'coastal_town' ? 14 : 42) * (quality === 'high' ? 1.25 : 1.0));
-  const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rockCount);
-  rockInst.castShadow = true;
-  rockInst.receiveShadow = true;
-  let rIdx = 0;
-  for (let tries = 0; tries < 180 && rIdx < rockCount; tries++) {
+  const totalRockCount = Math.round((contract.site === 'coastal_town' ? 14 : 44) * (quality === 'high' ? 1.25 : 1.0));
+  const rockCountA = Math.ceil(totalRockCount * 0.5);
+  const rockCountB = totalRockCount - rockCountA;
+  const rockInstA = new THREE.InstancedMesh(rockGeoA, rockMat, rockCountA);
+  const rockInstB = new THREE.InstancedMesh(rockGeoB, rockMat, Math.max(1, rockCountB));
+  rockInstA.castShadow = true;
+  rockInstA.receiveShadow = true;
+  rockInstB.castShadow = true;
+  rockInstB.receiveShadow = true;
+
+  const boulderAnchorSpots: Array<{ x: number; z: number; r: number }> = [];
+  let rIdxA = 0;
+  let rIdxB = 0;
+  for (let tries = 0; tries < 220 && rIdxA + rIdxB < totalRockCount; tries++) {
     const a = rand() * Math.PI * 2;
-    const d = (contract.site === 'coastal_town' ? 19 : 11) + rand() * 34;
+    const d = (contract.site === 'coastal_town' ? 19 : 10.5) + rand() * 34;
     const rx = Math.cos(a) * d;
     const rz = Math.sin(a) * d;
     if (contract.site === 'coastal_town' && rz > 10.5 && rz < 23.0) continue;
     if (homesteadDriveway && homesteadDriveway.isOnDriveway(rx, rz, 1.75)) continue;
     if (contract.site === 'misty_creek' && isInMistyCreek(rx, rz, 1.8)) continue;
+    if (contract.trees.some((t) => Math.hypot(t.x - rx, t.z - rz) < 3.0)) continue;
     if (contract.hazards.some((h) => Math.hypot(h.x - rx, h.z - rz) < h.radius + 2.2)) continue;
     const ry = getTerrainHeight(rx, rz, contract.site);
-    const sx = 0.6 + rand() * 1.4;
-    const sy = 0.35 + rand() * 0.7;
-    const sz = 0.6 + rand() * 1.3;
-    dummy.position.set(rx, ry + sy * 0.3, rz);
-    dummy.rotation.set(rand() * 0.5, rand() * Math.PI * 2, rand() * 0.5);
+    const sx = 0.65 + rand() * 1.35;
+    const sy = 0.38 + rand() * 0.68;
+    const sz = 0.65 + rand() * 1.28;
+    // Embed boulder firmly into the earth (y = ry + sy * 0.14) so its broad base anchors seamlessly on slopes
+    dummy.position.set(rx, ry + sy * 0.14, rz);
+    dummy.rotation.set((rand() - 0.5) * 0.24, rand() * Math.PI * 2, (rand() - 0.5) * 0.24);
     dummy.scale.set(sx, sy, sz);
     dummy.updateMatrix();
-    rockInst.setMatrixAt(rIdx, dummy.matrix);
-    rIdx++;
+    if (rIdxA < rockCountA && (rIdxB >= rockCountB || (rIdxA + rIdxB) % 2 === 0)) {
+      rockInstA.setMatrixAt(rIdxA++, dummy.matrix);
+    } else if (rIdxB < rockCountB) {
+      rockInstB.setMatrixAt(rIdxB++, dummy.matrix);
+    }
+    boulderAnchorSpots.push({ x: rx, z: rz, r: Math.max(sx, sz) });
   }
-  rockInst.count = rIdx;
-  rockInst.instanceMatrix.needsUpdate = true;
-  group.add(rockInst);
+  rockInstA.count = rIdxA;
+  rockInstA.instanceMatrix.needsUpdate = true;
+  group.add(rockInstA);
+  rockInstB.count = rIdxB;
+  rockInstB.instanceMatrix.needsUpdate = true;
+  if (rIdxB > 0) group.add(rockInstB);
+
+  // 7b. Grounded Fieldstones & Embedded Forest Cobble Clusters (seated half-buried around boulders & woodland soil)
+  const scatterStoneGeo = buildSculptedBoulderGeometry(0.32, quality === 'high' ? 2 : 1, 2);
+  const scatterStoneCount = Math.round((contract.site === 'coastal_town' ? 28 : 96) * densityMult);
+  const scatterStoneInst = new THREE.InstancedMesh(scatterStoneGeo, rockMat, scatterStoneCount);
+  scatterStoneInst.castShadow = quality === 'high';
+  scatterStoneInst.receiveShadow = true;
+  let ssIdx = 0;
+
+  // Cluster small weathered companion stones around major boulders so outcrops feel naturally fractured & settled
+  for (const b of boulderAnchorSpots) {
+    const companions = 1 + Math.floor(rand() * 3);
+    for (let c = 0; c < companions && ssIdx < scatterStoneCount; c++) {
+      const ca = rand() * Math.PI * 2;
+      const cd = b.r * (0.88 + rand() * 0.95);
+      const sx = b.x + Math.cos(ca) * cd;
+      const sz = b.z + Math.sin(ca) * cd;
+      if (homesteadDriveway && homesteadDriveway.isOnDriveway(sx, sz, 0.8)) continue;
+      if (contract.site === 'misty_creek' && isInMistyCreek(sx, sz, 0.6)) continue;
+      if (contract.site === 'coastal_town' && sz > 11.2 && sz < 22.0) continue;
+      const sy = getTerrainHeight(sx, sz, contract.site);
+      const scX = 0.62 + rand() * 0.85;
+      const scY = 0.34 + rand() * 0.44;
+      const scZ = 0.58 + rand() * 0.85;
+      dummy.position.set(sx, sy + scY * 0.04, sz);
+      dummy.rotation.set((rand() - 0.5) * 0.2, rand() * Math.PI * 2, (rand() - 0.5) * 0.2);
+      dummy.scale.set(scX, scY, scZ);
+      dummy.updateMatrix();
+      scatterStoneInst.setMatrixAt(ssIdx++, dummy.matrix);
+    }
+  }
+  // Additional half-buried fieldstones scattered naturally across the forest floor & mountain scree
+  for (let tries = 0; tries < Math.round(180 * densityMult) && ssIdx < scatterStoneCount; tries++) {
+    const a = rand() * Math.PI * 2;
+    const d = (contract.site === 'coastal_town' ? 14 : 6.5) + rand() * 30;
+    const sx = Math.cos(a) * d;
+    const sz = Math.sin(a) * d;
+    if (isGroundCoverBlocked(sx, sz)) continue;
+    const sy = getTerrainHeight(sx, sz, contract.site);
+    const scX = 0.55 + rand() * 0.95;
+    const scY = 0.28 + rand() * 0.42;
+    const scZ = 0.52 + rand() * 0.92;
+    dummy.position.set(sx, sy + scY * 0.03, sz);
+    dummy.rotation.set((rand() - 0.5) * 0.18, rand() * Math.PI * 2, (rand() - 0.5) * 0.18);
+    dummy.scale.set(scX, scY, scZ);
+    dummy.updateMatrix();
+    scatterStoneInst.setMatrixAt(ssIdx++, dummy.matrix);
+  }
+  scatterStoneInst.count = ssIdx;
+  scatterStoneInst.instanceMatrix.needsUpdate = true;
+  group.add(scatterStoneInst);
 
   // 8. Towering Backdrop Cascadia Forest (Instanced Conifer Ring on surrounding ridges!)
   // Includes per-instance misty dissolve fade so background trees obstructing the camera smoothly fade out!
@@ -2524,44 +3023,41 @@ export function buildEnvironment(
   };
 
   const bgTreeCount = Math.round((contract.site === 'kootenay_rockies' ? 115 : 195) * (quality === 'high' ? 1.25 : 1.0));
-  const bgTrunkGeo = new THREE.CylinderGeometry(0.18, 0.45, 11, 6);
-  bgTrunkGeo.translate(0, 5.5, 0);
-  const bgBarkPbr = pbrAssets.getPbrSet('pine_bark', 'standard', { repeatX: 1, repeatY: 4 });
+  // Full-height tapered conifer trunk spine visible inside the translucent evergreen bough whorls!
+  const bgTrunkGeo = new THREE.CylinderGeometry(0.08, 0.46, 18.5, 6);
+  bgTrunkGeo.translate(0, 9.25, 0);
+  const bgBarkPbr = pbrAssets.getPbrSet('pine_bark', 'standard', { repeatX: 1, repeatY: 6 });
   const bgTrunkMat = new THREE.MeshStandardMaterial({
     map: bgBarkPbr.map,
-    color: '#9c7c66',
+    color: '#8f725d',
     roughness: 0.95,
   });
   applyBgTreeFadeShader(bgTrunkMat);
 
-  const bgCone1Geo = new THREE.ConeGeometry(3.4, 10.5, 7);
-  bgCone1Geo.translate(0, 9.2, 0);
-  const bgCone2Geo = new THREE.ConeGeometry(2.6, 9.0, 7);
-  bgCone2Geo.translate(0, 14.2, 0);
-  const bgCone3Geo = new THREE.ConeGeometry(1.7, 7.2, 7);
-  bgCone3Geo.translate(0, 18.8, 0);
-
+  // Alpha-tested botanical evergreen bough-whorl crown geometry (replaces smooth paper cones in 1 instanced draw call!)
+  const bgCrownAssets = buildBackdropConiferCrownAssets(quality);
+  const bgFolGeo = bgCrownAssets.geometry;
   const bgFolMat = new THREE.MeshStandardMaterial({
-    color: quality === 'high' ? '#c2d1be' : '#ffffff',
-    roughness: 0.92,
-    envMapIntensity: quality === 'high' ? 0.3 : 1.0,
-    flatShading: quality !== 'high',
+    map: bgCrownAssets.map,
+    color: '#ffffff',
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    alphaTest: 0.38,
+    roughness: 0.88,
+    metalness: 0.02,
+    envMapIntensity: quality === 'high' ? 0.34 : 0.65,
   });
-  applyBgTreeFadeShader(bgFolMat, true);
+  applyBgTreeFadeShader(bgFolMat, false);
 
   const bgFadeArray = new Float32Array(bgTreeCount).fill(1);
   const bgFadeAttr = new THREE.InstancedBufferAttribute(bgFadeArray, 1);
   bgFadeAttr.setUsage(THREE.DynamicDrawUsage);
   bgTrunkGeo.setAttribute('aFade', bgFadeAttr);
-  bgCone1Geo.setAttribute('aFade', bgFadeAttr);
-  bgCone2Geo.setAttribute('aFade', bgFadeAttr);
-  bgCone3Geo.setAttribute('aFade', bgFadeAttr);
+  bgFolGeo.setAttribute('aFade', bgFadeAttr);
 
   const bgTrunks = new THREE.InstancedMesh(bgTrunkGeo, bgTrunkMat, bgTreeCount);
-  const bgFol1 = new THREE.InstancedMesh(bgCone1Geo, bgFolMat, bgTreeCount);
-  const bgFol2 = new THREE.InstancedMesh(bgCone2Geo, bgFolMat, bgTreeCount);
-  const bgFol3 = new THREE.InstancedMesh(bgCone3Geo, bgFolMat, bgTreeCount);
-  bgFol1.receiveShadow = true;
+  const bgFolCards = new THREE.InstancedMesh(bgFolGeo, bgFolMat, bgTreeCount);
+  bgFolCards.receiveShadow = true;
 
   const bgTreeMeta: Array<{ x: number; y: number; z: number; rMax: number; yMax: number; fade: number }> = [];
 
@@ -2599,54 +3095,49 @@ export function buildEnvironment(
     dummy.updateMatrix();
 
     bgTrunks.setMatrixAt(tPlaced, dummy.matrix);
-    bgFol1.setMatrixAt(tPlaced, dummy.matrix);
-    bgFol2.setMatrixAt(tPlaced, dummy.matrix);
-    bgFol3.setMatrixAt(tPlaced, dummy.matrix);
+    bgFolCards.setMatrixAt(tPlaced, dummy.matrix);
 
     bgTreeMeta.push({
       x: tx,
       y: ty - 0.5,
       z: tz,
-      rMax: 3.55 * Math.max(sx, sz),
-      yMax: ty - 0.5 + 22.8 * sy,
+      rMax: 3.75 * Math.max(sx, sz),
+      yMax: ty - 0.5 + 23.2 * sy,
       fade: 1,
     });
 
-    // Regional forest color variation
+    // Regional forest color modulation (multiplied over rich evergreen needle texture!)
     if (contract.site === 'kootenay_rockies') {
       const rCol = rand();
       if (rCol < 0.24) {
         // Golden autumn Western Larch accents scattered across the foothills!
-        col.setHSL(0.12 + (rand() - 0.5) * 0.03, 0.65 + rand() * 0.15, 0.42 + rand() * 0.1);
+        col.setRGB(1.45 + rand() * 0.15, 1.08 + rand() * 0.12, 0.38 + rand() * 0.08);
       } else if (rCol < 0.42) {
         // Silvery Blue Spruce / interior pine hue
-        col.setHSL(0.49 + (rand() - 0.5) * 0.06, 0.28 + rand() * 0.12, 0.30 + rand() * 0.1);
+        col.setRGB(0.68 + rand() * 0.12, 0.88 + rand() * 0.12, 0.98 + rand() * 0.1);
       } else {
         // Sun-warmed Ponderosa Pine & interior Douglas Fir greens
-        col.setHSL(0.29 + (rand() - 0.5) * 0.07, 0.34 + rand() * 0.14, 0.24 + rand() * 0.11);
+        col.setRGB(0.84 + rand() * 0.18, 0.92 + rand() * 0.16, 0.72 + rand() * 0.14);
       }
     } else {
       // Rich PNW forest color variation (Douglas fir emerald, Sitka spruce teal, cedar olive)
-      col.setHSL(0.35 + (rand() - 0.5) * 0.08, 0.36 + rand() * 0.14, 0.22 + rand() * 0.11);
+      const tintShade = 0.76 + rand() * 0.32;
+      col.setRGB(
+        tintShade * (0.88 + rand() * 0.18),
+        tintShade * (0.96 + rand() * 0.14),
+        tintShade * (0.86 + rand() * 0.22)
+      );
     }
-    bgFol1.setColorAt(tPlaced, col);
-    bgFol2.setColorAt(tPlaced, col);
-    bgFol3.setColorAt(tPlaced, col);
+    bgFolCards.setColorAt(tPlaced, col);
     tPlaced++;
   }
   bgTrunks.count = tPlaced;
-  bgFol1.count = tPlaced;
-  bgFol2.count = tPlaced;
-  bgFol3.count = tPlaced;
+  bgFolCards.count = tPlaced;
   bgTrunks.instanceMatrix.needsUpdate = true;
-  bgFol1.instanceMatrix.needsUpdate = true;
-  bgFol2.instanceMatrix.needsUpdate = true;
-  bgFol3.instanceMatrix.needsUpdate = true;
-  if (bgFol1.instanceColor) bgFol1.instanceColor.needsUpdate = true;
-  if (bgFol2.instanceColor) bgFol2.instanceColor.needsUpdate = true;
-  if (bgFol3.instanceColor) bgFol3.instanceColor.needsUpdate = true;
+  bgFolCards.instanceMatrix.needsUpdate = true;
+  if (bgFolCards.instanceColor) bgFolCards.instanceColor.needsUpdate = true;
 
-  group.add(bgTrunks, bgFol1, bgFol2, bgFol3);
+  group.add(bgTrunks, bgFolCards);
 
   const updateBackgroundOcclusion = (cameraPos: THREE.Vector3, targetPos: THREE.Vector3, dt: number): void => {
     const dx = targetPos.x - cameraPos.x;

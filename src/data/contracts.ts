@@ -197,9 +197,9 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     ],
     basePayout: 1150,
     hazards: [
-      { id: 'h-sap1', label: 'Protected Cedar Sapling', type: 'sapling', x: 3.5, z: -9.5, radius: 2.3 },
-      { id: 'h-sap2', label: 'Protected Cedar Sapling', type: 'sapling', x: -9.5, z: 9.0, radius: 2.3 },
-      { id: 'h-sap3', label: 'Protected Cedar Sapling', type: 'sapling', x: 15.0, z: 12.0, radius: 2.3 },
+      { id: 'h-sap1', label: 'Protected Cedar Sapling', type: 'sapling', species: 'western_red_cedar', x: 3.5, z: -9.5, radius: 2.3 },
+      { id: 'h-sap2', label: 'Protected Cedar Sapling', type: 'sapling', species: 'western_red_cedar', x: -9.5, z: 9.0, radius: 2.3 },
+      { id: 'h-sap3', label: 'Protected Cedar Sapling', type: 'sapling', species: 'western_red_cedar', x: 15.0, z: 12.0, radius: 2.3 },
     ],
     trees: [
       {
@@ -365,9 +365,9 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     ],
     basePayout: 2400,
     hazards: [
-      { id: 'h-sap1', label: 'Protected Old-Growth Sapling', type: 'sapling', x: -9.0, z: -11.0, radius: 2.6 },
-      { id: 'h-sap2', label: 'Protected Old-Growth Sapling', type: 'sapling', x: 11.5, z: -8.5, radius: 2.6 },
-      { id: 'h-sap3', label: 'Protected Old-Growth Sapling', type: 'sapling', x: -12.0, z: 10.5, radius: 2.6 },
+      { id: 'h-sap1', label: 'Protected Old-Growth Sapling', type: 'sapling', species: 'douglas_fir', x: -9.0, z: -11.0, radius: 2.6 },
+      { id: 'h-sap2', label: 'Protected Old-Growth Sapling', type: 'sapling', species: 'douglas_fir', x: 11.5, z: -8.5, radius: 2.6 },
+      { id: 'h-sap3', label: 'Protected Old-Growth Sapling', type: 'sapling', species: 'douglas_fir', x: -12.0, z: 10.5, radius: 2.6 },
       { id: 'h-shed', label: 'Timber Scale Shed', type: 'shed', x: 14.5, z: 9.0, radius: 3.6, width: 4.5, depth: 3.8, rotation: -0.4 },
     ],
     trees: [
@@ -690,7 +690,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     hazards: [
       { id: 'h-cabin', label: 'Fog-Belt Lodge', type: 'cabin', x: -13.5, z: -8.5, radius: 5.5, width: 9, depth: 7, rotation: 0.1 },
       { id: 'h-shed', label: 'Coast Guard Shed', type: 'shed', x: 15.5, z: 6.5, radius: 3.4, width: 4.6, depth: 3.6, rotation: -0.2 },
-      { id: 'h-sap1', label: 'Protected Redwood Sapling', type: 'sapling', x: -7.5, z: 11.0, radius: 2.4 },
+      { id: 'h-sap1', label: 'Protected Redwood Sapling', type: 'sapling', species: 'california_redwood', x: -7.5, z: 11.0, radius: 2.4 },
       { id: 'h-power', label: 'Coastal Utility Pole', type: 'powerline', x: 12.5, z: -9.5, radius: 2.4 },
     ],
     trees: [
@@ -970,7 +970,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
       { id: 'h-aframe', label: 'Alpine A-Frame', type: 'aframe', x: -12.5, z: -6.5, radius: 5.2, rotation: 0.38 },
       { id: 'h-cabin', label: 'Guest Log Cabin', type: 'cabin', x: 13.5, z: -5.5, radius: 5.5, width: 9, depth: 7, rotation: -0.28 },
       { id: 'h-truck', label: 'Forestry Truck', type: 'truck', x: 0.5, z: 18.5, radius: 2.6, rotation: 0.12 },
-      { id: 'h-sap', label: 'Young Larch Sapling', type: 'sapling', x: 11.5, z: 9.5, radius: 2.4 },
+      { id: 'h-sap', label: 'Young Larch Sapling', type: 'sapling', species: 'western_larch', x: 11.5, z: 9.5, radius: 2.4 },
     ],
     trees: [
       {
@@ -1061,6 +1061,72 @@ export function isCampaignJobUnlocked(contract: ContractSpec, playerLevel: numbe
 export function getLevelGateJob(difficulty: number): ContractSpec | undefined {
   const id = LEVEL_GATE_CONTRACT_IDS[difficulty];
   return id ? CAMPAIGN_CONTRACTS.find((c) => c.id === id) : undefined;
+}
+
+const CAMPAIGN_SPECIES = new Set<SpeciesId>(
+  CAMPAIGN_CONTRACTS.flatMap((c) => c.trees.map((t) => t.species))
+);
+const CAMPAIGN_SITES = new Set<SiteId>(CAMPAIGN_CONTRACTS.map((c) => c.site));
+
+/** Species and sites from campaign jobs the player has finished. */
+export function encountersFromCompleted(completed: CampaignCompletionMap): {
+  species: SpeciesId[];
+  sites: SiteId[];
+} {
+  const species: SpeciesId[] = [];
+  const sites: SiteId[] = [];
+  for (const c of CAMPAIGN_CONTRACTS) {
+    if (!completed[c.id]) continue;
+    for (const t of c.trees) {
+      if (!species.includes(t.species)) species.push(t.species);
+    }
+    if (!sites.includes(c.site)) sites.push(c.site);
+  }
+  return { species, sites };
+}
+
+/** Keep saved discoveries, then add anything already earned by finished jobs. */
+export function mergeEncounterLists(
+  savedSpecies: unknown,
+  savedSites: unknown,
+  fromCompleted: { species: SpeciesId[]; sites: SiteId[] }
+): { species: SpeciesId[]; sites: SiteId[] } {
+  const species: SpeciesId[] = [];
+  const sites: SiteId[] = [];
+  const pushSpecies = (id: string) => {
+    if (!CAMPAIGN_SPECIES.has(id as SpeciesId) || species.includes(id as SpeciesId)) return;
+    species.push(id as SpeciesId);
+  };
+  const pushSite = (id: string) => {
+    if (!CAMPAIGN_SITES.has(id as SiteId) || sites.includes(id as SiteId)) return;
+    sites.push(id as SiteId);
+  };
+  if (Array.isArray(savedSpecies)) {
+    for (const id of savedSpecies) {
+      if (typeof id === 'string') pushSpecies(id);
+    }
+  }
+  if (Array.isArray(savedSites)) {
+    for (const id of savedSites) {
+      if (typeof id === 'string') pushSite(id);
+    }
+  }
+  for (const id of fromCompleted.species) pushSpecies(id);
+  for (const id of fromCompleted.sites) pushSite(id);
+  return { species, sites };
+}
+
+export function isSandboxSelectionAllowed(
+  species: SpeciesId | undefined,
+  site: SiteId,
+  encounteredSpecies: readonly SpeciesId[],
+  encounteredSites: readonly SiteId[]
+): boolean {
+  return (
+    species !== undefined &&
+    encounteredSpecies.includes(species) &&
+    encounteredSites.includes(site)
+  );
 }
 
 /** Next playable campaign job: respects unlocks; prefers continuing forward after `afterContractId`. */
@@ -1188,7 +1254,7 @@ export function createSandboxContract(opts: {
             ]
           : [
             { id: 'sb-shed', label: 'Woodshed', type: 'shed', x: -11.5, z: -7.5, radius: 3.5, width: 4.6, depth: 3.6, rotation: 0.2 },
-            { id: 'sb-sap', label: 'Protected Sapling', type: 'sapling', x: -6.5, z: 11.0, radius: 2.4 },
+            { id: 'sb-sap', label: 'Protected Sapling', type: 'sapling', species: 'western_red_cedar', x: -6.5, z: 11.0, radius: 2.4 },
           ],
     trees: [
       {

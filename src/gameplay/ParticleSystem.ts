@@ -78,6 +78,7 @@ export class ParticleSystem {
   private rollingLogs: RollingLogSegment[] = [];
   private fallingTopSections: FallingTopSection[] = [];
   private ambientMotes: THREE.Points;
+  private ambientMoteMat!: THREE.ShaderMaterial;
   private rainLines: THREE.LineSegments;
   private rainDrops: Array<{ x: number; y: number; z: number; speed: number; len: number }> = [];
   private weather: WeatherId = 'sunny_morning';
@@ -144,6 +145,10 @@ export class ParticleSystem {
 
     (this.impactMoteMat.uniforms.uFogColor.value as THREE.Color).copy(opts.fogColor);
     this.impactMoteMat.uniforms.uFogDensity.value = opts.fogDensity;
+
+    (this.ambientMoteMat.uniforms.uFogColor.value as THREE.Color).copy(opts.fogColor);
+    this.ambientMoteMat.uniforms.uFogDensity.value = opts.fogDensity;
+    (this.ambientMoteMat.uniforms.uSunColor.value as THREE.Color).copy(opts.sunColor);
   }
 
   private createDustCloudSystem(): {
@@ -487,19 +492,23 @@ export class ParticleSystem {
     const isRain = weather === 'light_rain';
     this.rainLines.visible = isRain;
 
-    const moteMat = this.ambientMotes.material as THREE.PointsMaterial;
+    const u = this.ambientMoteMat.uniforms;
     if (isRain) {
-      moteMat.color.set('#cfe2e8');
-      moteMat.opacity = 0.22;
-      moteMat.size = 0.16;
+      (u.uColor.value as THREE.Color).set('#cfe2e8');
+      u.uOpacity.value = 0.22;
+      u.uSizeScale.value = 0.24;
     } else if (weather === 'misty_fog') {
-      moteMat.color.set('#e2efee');
-      moteMat.opacity = 0.34;
-      moteMat.size = 0.16;
+      (u.uColor.value as THREE.Color).set('#e4f0ee');
+      u.uOpacity.value = 0.34;
+      u.uSizeScale.value = 0.28;
+    } else if (weather === 'golden_hour') {
+      (u.uColor.value as THREE.Color).set('#ffebb8');
+      u.uOpacity.value = 0.56;
+      u.uSizeScale.value = 0.30;
     } else {
-      moteMat.color.set('#fff6d6');
-      moteMat.opacity = 0.42;
-      moteMat.size = 0.14;
+      (u.uColor.value as THREE.Color).set('#fff6dc');
+      u.uOpacity.value = 0.44;
+      u.uSizeScale.value = 0.27;
     }
   }
 
@@ -539,23 +548,105 @@ export class ParticleSystem {
   }
 
   private createAmbientMotes(): THREE.Points {
-    const count = 160;
+    const count = 190;
     const positions = new Float32Array(count * 3);
+    // Per-mote attributes: [phase, sizeMult, shapeSeed, warmTint]
+    const seeds = new Float32Array(count * 4);
     for (let i = 0; i < count; i++) {
       positions[i * 3] = (Math.random() - 0.5) * 44;
-      positions[i * 3 + 1] = 0.8 + Math.random() * 18;
+      positions[i * 3 + 1] = 0.6 + Math.random() * 18;
       positions[i * 3 + 2] = (Math.random() - 0.5) * 44;
+
+      const isFluff = Math.random() < 0.24;
+      seeds[i * 4] = Math.random(); // shimmer & drift phase
+      seeds[i * 4 + 1] = isFluff ? 1.05 + Math.random() * 0.55 : 0.45 + Math.random() * 0.52;
+      seeds[i * 4 + 2] = isFluff ? 0.55 + Math.random() * 0.45 : Math.random() * 0.35; // organic fluffiness
+      seeds[i * 4 + 3] = Math.random(); // tint mix between warm sunlit pollen & pale misty dust
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({
-      color: '#fff6d6',
-      size: 0.14,
+    geo.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4));
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color('#fff6dc') },
+        uSunColor: { value: new THREE.Color('#fff1cc') },
+        uOpacity: { value: 0.44 },
+        uSizeScale: { value: 0.27 },
+        uFogColor: { value: new THREE.Color('#bfcfcc') },
+        uFogDensity: { value: 0.008 },
+      },
       transparent: true,
-      opacity: 0.42,
       depthWrite: false,
+      vertexShader: /* glsl */ `
+        attribute vec4 aSeed;
+        uniform float uSizeScale;
+        varying vec4 vSeed;
+        varying float vCamDist;
+        varying float vWorldY;
+
+        void main() {
+          vec4 wPos = modelMatrix * vec4(position, 1.0);
+          vec4 mvPos = viewMatrix * wPos;
+          vCamDist = max(0.5, -mvPos.z);
+          vWorldY = wPos.y;
+          vSeed = aSeed;
+          float px = (uSizeScale * aSeed.y * 235.0) / vCamDist;
+          gl_PointSize = clamp(px, 1.6, 13.5);
+          gl_Position = projectionMatrix * mvPos;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uTime;
+        uniform vec3 uColor;
+        uniform vec3 uSunColor;
+        uniform float uOpacity;
+        uniform vec3 uFogColor;
+        uniform float uFogDensity;
+        varying vec4 vSeed;
+        varying float vCamDist;
+        varying float vWorldY;
+
+        void main() {
+          vec2 c = gl_PointCoord * 2.0 - 1.0;
+          float angle = atan(c.y, c.x) + uTime * (0.35 + vSeed.x * 0.45) + vSeed.x * 6.2831;
+          float r = length(c);
+
+          // Subtle organic asymmetry so pollen clumps & cottonwood fluff look airy, never geometric squares
+          float fluff = vSeed.z;
+          float organicWarp = 1.0 + fluff * (0.18 * sin(angle * 3.0 + vSeed.x * 11.0) + 0.10 * cos(angle * 5.0 - vSeed.w * 7.0));
+          float rr = r * organicWarp;
+          if (rr >= 1.0) discard;
+
+          // Bright pinpoint sunlit dust core + whisper-soft bokeh halo
+          float core = exp(-rr * rr * 6.5);
+          float halo = pow(max(0.0, 1.0 - rr * rr), 2.3) * (0.42 + fluff * 0.28);
+          float shape = clamp(core * 0.78 + halo * 0.58, 0.0, 1.0);
+
+          // Gentle sunbeam twinkle as motes tumble through shafts of forest light
+          float shimmer = 0.46 + 0.54 * (0.5 + 0.5 * sin(uTime * (0.95 + vSeed.x * 1.35) + vSeed.x * 6.2831));
+
+          // Soft fade near camera lens & very close to soil so motes never pop
+          float nearFade = smoothstep(1.3, 4.4, vCamDist);
+          float groundFade = smoothstep(0.3, 1.3, vWorldY);
+          float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * vCamDist * vCamDist);
+          float farFade = 1.0 - smoothstep(0.68, 0.98, fogFactor);
+
+          vec3 warmCol = mix(uColor, uSunColor * 1.12, vSeed.w * 0.65);
+          vec3 col = mix(warmCol, uFogColor, clamp(fogFactor * 0.72, 0.0, 0.85));
+          float alpha = shape * shimmer * uOpacity * nearFade * groundFade * farFade;
+          if (alpha < 0.006) discard;
+          gl_FragColor = vec4(col, alpha);
+        }
+      `,
     });
-    return new THREE.Points(geo, mat);
+
+    this.ambientMoteMat = mat;
+    const pts = new THREE.Points(geo, mat);
+    pts.frustumCulled = false;
+    pts.renderOrder = 3;
+    return pts;
   }
 
   public spawnSawdust(
@@ -959,18 +1050,22 @@ export class ParticleSystem {
   }
 
   public update(dt: number, elapsed: number, windSpeed: number, windAngle: number): void {
-    // Ambient drifting coastal motes
+    // Ambient drifting forest dust & pollen motes (soft sunlit bokeh with swirling thermal eddies)
+    this.ambientMoteMat.uniforms.uTime.value = elapsed;
     const pos = this.ambientMotes.geometry.attributes.position as THREE.BufferAttribute;
-    const wx = Math.cos(windAngle) * (0.25 + windSpeed * 1.4);
-    const wz = Math.sin(windAngle) * (0.25 + windSpeed * 1.4);
+    const wx = Math.cos(windAngle) * (0.18 + windSpeed * 1.25);
+    const wz = Math.sin(windAngle) * (0.18 + windSpeed * 1.25);
     for (let i = 0; i < pos.count; i++) {
-      let x = pos.getX(i) + wx * dt + Math.sin(elapsed * 0.6 + i) * 0.008;
-      let y = pos.getY(i) + Math.cos(elapsed * 0.8 + i * 1.7) * 0.006;
-      let z = pos.getZ(i) + wz * dt;
-      if (x > 22) x = -22;
-      if (x < -22) x = 22;
-      if (z > 22) z = -22;
-      if (z < -22) z = 22;
+      const fi = i * 1.37;
+      let x = pos.getX(i) + (wx + Math.sin(elapsed * 0.45 + fi) * 0.24) * dt;
+      let y = pos.getY(i) + (Math.cos(elapsed * 0.55 + fi * 1.3) * 0.16 + 0.03) * dt;
+      let z = pos.getZ(i) + (wz + Math.cos(elapsed * 0.41 + fi * 0.85) * 0.24) * dt;
+      if (x > 22) x -= 44;
+      else if (x < -22) x += 44;
+      if (z > 22) z -= 44;
+      else if (z < -22) z += 44;
+      if (y > 19.5) y = 0.8 + (i % 7) * 0.35;
+      else if (y < 0.5) y = 16.5;
       pos.setXYZ(i, x, y, z);
     }
     pos.needsUpdate = true;
