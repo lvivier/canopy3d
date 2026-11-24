@@ -14,16 +14,38 @@ interface DynamicParticle {
 
 interface FallingBranch {
   group: THREE.Object3D;
-  vel: THREE.Vector3;
-  rotVel: THREE.Vector3;
-  age: number;
+  velY: number;
+  restY: number;
   settled: boolean;
+}
+
+interface RollingLogSegment {
+  group: THREE.Object3D;
+  vel: THREE.Vector3;
+  rollAxis: THREE.Vector3; // world longitudinal axis of the cylinder
+  lateralAxis: THREE.Vector3; // world horizontal perpendicular roll direction
+  restY: number;
+  rollSign: number;
+  yawSpin: number;
+  settled: boolean;
+}
+
+interface FallingTopSection {
+  pivot: THREE.Group;
+  vel: THREE.Vector3;
+  tipAxis: THREE.Vector3;
+  tipSpeed: number;
+  age: number;
+  foliageColors: string[];
+  woodColor: string;
 }
 
 export class ParticleSystem {
   private scene: THREE.Scene;
   private particles: DynamicParticle[] = [];
   private fallingBranches: FallingBranch[] = [];
+  private rollingLogs: RollingLogSegment[] = [];
+  private fallingTopSections: FallingTopSection[] = [];
   private ambientMotes: THREE.Points;
   private chipGeo = new THREE.BoxGeometry(0.11, 0.05, 0.08);
   private dustGeo = new THREE.DodecahedronGeometry(0.32, 0);
@@ -179,6 +201,77 @@ export class ParticleSystem {
     }
   }
 
+  /**
+   * Remove a cut limb from the world and replace it with a short burst of
+   * leaves and chips so forestry scenes don't fill up with leftover sticks.
+   */
+  public dissolveLimb(branchGroup: THREE.Object3D, foliageColors: string[], woodColor: string): void {
+    branchGroup.updateWorldMatrix(true, true);
+    const box = new THREE.Box3().setFromObject(branchGroup);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const span = Math.max(0.8, size.length());
+
+    if (branchGroup.parent) branchGroup.parent.remove(branchGroup);
+    this.scene.remove(branchGroup);
+
+    const leafCount = Math.min(26, 8 + Math.round(span * 2.4));
+    this.spawnFoliageBurst(center, foliageColors, leafCount);
+    this.spawnSawdust(center, new THREE.Vector3(0, 1, 0), woodColor, Math.min(14, 5 + Math.round(span)));
+
+    const puff = Math.max(3, Math.min(6, Math.round(span)));
+    for (let i = 0; i < puff; i++) {
+      const p = new THREE.Vector3(
+        THREE.MathUtils.lerp(box.min.x, box.max.x, Math.random()),
+        THREE.MathUtils.lerp(box.min.y, box.max.y, Math.random()),
+        THREE.MathUtils.lerp(box.min.z, box.max.z, Math.random())
+      );
+      this.spawnFoliageBurst(p, foliageColors, 3);
+      this.spawnSawdust(p, new THREE.Vector3((Math.random() - 0.5), 1, (Math.random() - 0.5)), woodColor, 2);
+    }
+  }
+
+  /**
+   * Detaches a pieced-down standing upper section, tips it cleanly away from hazards
+   * as it falls toward the pocket, then bursts it into chips & foliage so the landing stays clear.
+   */
+  public addFallingTopSection(
+    segmentGroups: THREE.Object3D[],
+    cutWorldPos: THREE.Vector3,
+    tipDir: THREE.Vector3,
+    foliageColors: string[],
+    woodColor: string
+  ): void {
+    if (segmentGroups.length === 0) return;
+
+    const pivot = new THREE.Group();
+    pivot.position.copy(cutWorldPos);
+    this.scene.add(pivot);
+    pivot.updateWorldMatrix(true, false);
+
+    for (const seg of segmentGroups) {
+      seg.updateWorldMatrix(true, true);
+      pivot.attach(seg);
+    }
+
+    const dir = tipDir.clone();
+    dir.y = 0;
+    if (dir.lengthSq() < 0.01) dir.set(1, 0, 0);
+    dir.normalize();
+    // Horizontal axis perpendicular to tipDir so positive rotation tips +Y toward dir
+    const tipAxis = new THREE.Vector3(0, 1, 0).cross(dir).normalize();
+
+    this.fallingTopSections.push({
+      pivot,
+      vel: dir.clone().multiplyScalar(2.6).add(new THREE.Vector3(0, 0.9, 0)),
+      tipAxis,
+      tipSpeed: 1.55,
+      age: 0,
+      foliageColors,
+      woodColor,
+    });
+  }
+
   public addFallingBranch(branchGroup: THREE.Object3D, outDir: THREE.Vector3): void {
     // Reparent to world space preserving exact transform
     const worldPos = new THREE.Vector3();
@@ -196,15 +289,88 @@ export class ParticleSystem {
     branchGroup.scale.copy(worldScale);
     this.scene.add(branchGroup);
 
+    // Lay the limb flat immediately (local +X is the stick). No tumbling that leaves it upright in the crown.
+    const kick = outDir.clone();
+    kick.y = 0;
+    if (kick.lengthSq() < 0.04) kick.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+    kick.normalize();
+
+    const localAxis = new THREE.Vector3(1, 0, 0);
+    const worldAxis = localAxis.clone().applyQuaternion(worldQuat);
+    let flatDir = new THREE.Vector3(worldAxis.x, 0, worldAxis.z);
+    if (flatDir.lengthSq() < 0.04) flatDir.copy(kick);
+    flatDir.normalize();
+    const layFlatQuat = new THREE.Quaternion().setFromUnitVectors(localAxis, flatDir);
+    layFlatQuat.premultiply(
+      new THREE.Quaternion().setFromAxisAngle(flatDir, Math.random() * Math.PI * 2)
+    );
+    branchGroup.quaternion.copy(layFlatQuat);
+
+    // Move it clear of the trunk/crown before it drops, so it cannot stay hung in the foliage.
+    const clearDist = 3.4 + Math.random() * 2.2;
+    branchGroup.position.x += kick.x * clearDist;
+    branchGroup.position.z += kick.z * clearDist;
+    branchGroup.position.y = Math.max(branchGroup.position.y, 1.1) + 0.35;
+
+    branchGroup.updateWorldMatrix(true, true);
+    const box = new THREE.Box3().setFromObject(branchGroup);
+    const restY = branchGroup.position.y - (box.min.y - 0.08);
+
     this.fallingBranches.push({
       group: branchGroup,
-      vel: outDir.clone().multiplyScalar(1.9).add(new THREE.Vector3(0, 0.8, 0)),
-      rotVel: new THREE.Vector3(
-        (Math.random() - 0.5) * 2.5,
-        (Math.random() - 0.5) * 1.4,
-        (Math.random() - 0.5) * 2.5
-      ),
-      age: 0,
+      velY: 0,
+      restY,
+      settled: false,
+    });
+  }
+
+  public addBuckedLogSegment(
+    segGroup: THREE.Object3D,
+    axialDir: THREE.Vector3,
+    avgRadius: number,
+    axialKick: number,
+    isCrownTip: boolean
+  ): void {
+    // Reparent segment into world space preserving exact fallen transform
+    const worldPos = new THREE.Vector3();
+    const worldQuat = new THREE.Quaternion();
+    const worldScale = new THREE.Vector3();
+    segGroup.getWorldPosition(worldPos);
+    segGroup.getWorldQuaternion(worldQuat);
+    segGroup.getWorldScale(worldScale);
+
+    if (segGroup.parent) {
+      segGroup.parent.remove(segGroup);
+    }
+    segGroup.position.copy(worldPos);
+    segGroup.quaternion.copy(worldQuat);
+    segGroup.scale.copy(worldScale);
+    this.scene.add(segGroup);
+
+    const axis = axialDir.clone().setY(0).normalize();
+    if (axis.lengthSq() < 0.01) axis.set(1, 0, 0);
+    const lateral = new THREE.Vector3(-axis.z, 0, axis.x).normalize();
+
+    const rollDir = Math.random() > 0.5 ? 1 : -1;
+    const lateralSpeed = isCrownTip
+      ? (0.35 + Math.random() * 0.35) * rollDir
+      : (1.05 + Math.random() * 0.85) * rollDir;
+    const hopVel = isCrownTip ? 0.55 : 1.15 + Math.random() * 0.4;
+
+    const vel = axis
+      .clone()
+      .multiplyScalar(axialKick)
+      .addScaledVector(lateral, lateralSpeed);
+    vel.y = hopVel;
+
+    this.rollingLogs.push({
+      group: segGroup,
+      vel,
+      rollAxis: axis,
+      lateralAxis: lateral,
+      restY: Math.max(0.22, avgRadius * 1.02),
+      rollSign: 1, // right-hand rule around +axis aligns with +lateral rolling
+      yawSpin: (Math.random() - 0.5) * (isCrownTip ? 0.25 : 0.65),
       settled: false,
     });
   }
@@ -252,27 +418,83 @@ export class ParticleSystem {
       p.mesh.scale.setScalar(Math.max(0.01, sc));
     }
 
-    // Detached pruned branches tumbling to the forest floor
+    // Cut limbs drop straight down onto open ground and stay flat
     for (let i = this.fallingBranches.length - 1; i >= 0; i--) {
       const fb = this.fallingBranches[i];
-      fb.age += dt;
-      if (!fb.settled) {
-        fb.vel.y -= 11.5 * dt;
-        fb.group.position.addScaledVector(fb.vel, dt);
-        fb.group.rotation.x += fb.rotVel.x * dt;
-        fb.group.rotation.y += fb.rotVel.y * dt;
-        fb.group.rotation.z += fb.rotVel.z * dt;
-        if (fb.group.position.y <= 0.45) {
-          fb.group.position.y = 0.45;
-          if (Math.abs(fb.vel.y) > 1.8) {
-            fb.vel.y *= -0.22;
-            fb.vel.x *= 0.45;
-            fb.vel.z *= 0.45;
-            fb.rotVel.multiplyScalar(0.35);
-          } else {
-            fb.settled = true;
-          }
+      if (fb.settled) continue;
+
+      fb.velY -= 22 * dt;
+      fb.group.position.y += fb.velY * dt;
+
+      if (fb.group.position.y <= fb.restY) {
+        fb.group.position.y = fb.restY;
+        fb.group.updateWorldMatrix(true, true);
+        const box = new THREE.Box3().setFromObject(fb.group);
+        fb.group.position.y += 0.08 - box.min.y;
+        fb.velY = 0;
+        fb.settled = true;
+      }
+    }
+
+    // Detached bucked sawlog segments physically separating, hopping, and rolling to rest!
+    const tmpQuat = new THREE.Quaternion();
+    const upVec = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < this.rollingLogs.length; i++) {
+      const rl = this.rollingLogs[i];
+      if (rl.settled) continue;
+
+      rl.vel.y -= 9.8 * dt;
+      rl.group.position.addScaledVector(rl.vel, dt);
+
+      // Ground contact & rolling friction
+      if (rl.group.position.y <= rl.restY) {
+        rl.group.position.y = rl.restY;
+        if (Math.abs(rl.vel.y) > 0.75) {
+          rl.vel.y *= -0.24;
+        } else {
+          rl.vel.y = 0;
         }
+        // Damping on mossy forest floor
+        const damp = Math.exp(-3.1 * dt);
+        rl.vel.x *= damp;
+        rl.vel.z *= damp;
+        rl.yawSpin *= Math.exp(-4.0 * dt);
+      }
+
+      // True rolling rotation around the log's own longitudinal axis proportional to lateral motion!
+      const lateralSpeed = rl.vel.dot(rl.lateralAxis);
+      const omega = (lateralSpeed / Math.max(0.22, rl.restY)) * rl.rollSign;
+      if (Math.abs(omega) > 0.005) {
+        tmpQuat.setFromAxisAngle(rl.rollAxis, omega * dt);
+        rl.group.quaternion.premultiply(tmpQuat);
+      }
+      if (Math.abs(rl.yawSpin) > 0.004) {
+        tmpQuat.setFromAxisAngle(upVec, rl.yawSpin * dt);
+        rl.group.quaternion.premultiply(tmpQuat);
+        rl.rollAxis.applyQuaternion(tmpQuat).normalize();
+        rl.lateralAxis.set(-rl.rollAxis.z, 0, rl.rollAxis.x).normalize();
+      }
+
+      const horizSpeed = Math.hypot(rl.vel.x, rl.vel.z);
+      if (rl.group.position.y <= rl.restY + 0.005 && Math.abs(rl.vel.y) < 0.05 && horizSpeed < 0.04) {
+        rl.vel.set(0, 0, 0);
+        rl.settled = true;
+      }
+    }
+
+    // Pieced-down standing top rounds tip clear and burst into chips/foliage on impact
+    for (let i = this.fallingTopSections.length - 1; i >= 0; i--) {
+      const fts = this.fallingTopSections[i];
+      fts.age += dt;
+      fts.vel.y -= 14.5 * dt;
+      fts.pivot.position.addScaledVector(fts.vel, dt);
+      tmpQuat.setFromAxisAngle(fts.tipAxis, fts.tipSpeed * dt);
+      fts.pivot.quaternion.premultiply(tmpQuat);
+      fts.tipSpeed = Math.min(2.8, fts.tipSpeed + 1.4 * dt);
+
+      if (fts.pivot.position.y <= 1.6 || fts.age >= 0.95) {
+        this.dissolveLimb(fts.pivot, fts.foliageColors, fts.woodColor);
+        this.fallingTopSections.splice(i, 1);
       }
     }
   }
@@ -286,5 +508,13 @@ export class ParticleSystem {
       this.scene.remove(fb.group);
     }
     this.fallingBranches = [];
+    for (const rl of this.rollingLogs) {
+      this.scene.remove(rl.group);
+    }
+    this.rollingLogs = [];
+    for (const fts of this.fallingTopSections) {
+      this.scene.remove(fts.pivot);
+    }
+    this.fallingTopSections = [];
   }
 }

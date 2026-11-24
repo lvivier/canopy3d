@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 
 /**
- * Smooth mouse-driven orbital camera controller with smart contextual focus
+ * Smooth mouse & keyboard orbital camera controller with smart contextual focus
  * and impact camera shake.
- * - Right-click drag or Middle-click drag orbits around current target
- * - Scroll wheel zooms smoothly
+ * - Right-click drag, Middle-click drag, or Arrow keys orbit around current target
+ * - Scroll wheel or `-` / `=` (`+`) keys zoom smoothly
  * - Smooth lerp transitions when selecting trees or switching tools
  */
 export class CameraController {
@@ -29,6 +29,9 @@ export class CameraController {
 
   private shakeMagnitude = 0;
   private autoRotateSpeed = 0;
+
+  private keyboardEnabled = false;
+  private heldKeys = new Set<'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'ZoomIn' | 'ZoomOut'>();
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
     this.camera = camera;
@@ -76,6 +79,66 @@ export class CameraController {
       },
       { passive: false }
     );
+
+    const resolveCameraKey = (
+      e: KeyboardEvent
+    ): 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown' | 'ZoomIn' | 'ZoomOut' | null => {
+      if (e.key === 'ArrowLeft') return 'ArrowLeft';
+      if (e.key === 'ArrowRight') return 'ArrowRight';
+      if (e.key === 'ArrowUp') return 'ArrowUp';
+      if (e.key === 'ArrowDown') return 'ArrowDown';
+      if (e.code === 'Equal' || e.code === 'NumpadAdd' || e.key === '=' || e.key === '+') {
+        return 'ZoomIn';
+      }
+      if (e.code === 'Minus' || e.code === 'NumpadSubtract' || e.key === '-' || e.key === '_') {
+        return 'ZoomOut';
+      }
+      return null;
+    };
+
+    window.addEventListener('keydown', (e) => {
+      if (!this.keyboardEnabled || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      const camKey = resolveCameraKey(e);
+      if (!camKey) return;
+
+      e.preventDefault();
+      if (!e.repeat && !this.heldKeys.has(camKey)) {
+        // Immediate subtle nudge so quick single taps feel crisp & responsive
+        if (camKey === 'ArrowLeft') this.desiredAzimuth += 0.06;
+        else if (camKey === 'ArrowRight') this.desiredAzimuth -= 0.06;
+        else if (camKey === 'ArrowUp') {
+          this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar - 0.04, 0.28, 1.46);
+        } else if (camKey === 'ArrowDown') {
+          this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar + 0.04, 0.28, 1.46);
+        } else if (camKey === 'ZoomIn') {
+          this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * 0.93, 6.5, 52);
+        } else if (camKey === 'ZoomOut') {
+          this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * 1.075, 6.5, 52);
+        }
+      }
+      this.heldKeys.add(camKey);
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const camKey = resolveCameraKey(e);
+      if (camKey) {
+        this.heldKeys.delete(camKey);
+      }
+    });
+
+    window.addEventListener('blur', () => {
+      this.heldKeys.clear();
+    });
+  }
+
+  public setKeyboardEnabled(enabled: boolean): void {
+    this.keyboardEnabled = enabled;
+    if (!enabled) {
+      this.heldKeys.clear();
+    }
   }
 
   public isUserOrbiting(): boolean {
@@ -117,6 +180,10 @@ export class CameraController {
     return ((this.azimuth * 180) / Math.PI) % 360;
   }
 
+  public getTarget(): THREE.Vector3 {
+    return this.target;
+  }
+
   public applyImmediate(): void {
     this.target.copy(this.desiredTarget);
     this.azimuth = this.desiredAzimuth;
@@ -126,7 +193,34 @@ export class CameraController {
   }
 
   public update(dt: number): void {
-    if (this.autoRotateSpeed !== 0 && !this.isOrbiting) {
+    if (this.keyboardEnabled && this.heldKeys.size > 0) {
+      const orbitSpeed = 1.65; // rad/sec
+      const pitchSpeed = 1.15; // rad/sec
+      const zoomSpeed = 1.45;  // log-distance/sec
+
+      if (this.heldKeys.has('ArrowLeft')) this.desiredAzimuth += orbitSpeed * dt;
+      if (this.heldKeys.has('ArrowRight')) this.desiredAzimuth -= orbitSpeed * dt;
+      if (this.heldKeys.has('ArrowUp')) {
+        this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar - pitchSpeed * dt, 0.28, 1.46);
+      }
+      if (this.heldKeys.has('ArrowDown')) {
+        this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar + pitchSpeed * dt, 0.28, 1.46);
+      }
+      if (this.heldKeys.has('ZoomIn')) {
+        this.desiredDistance = THREE.MathUtils.clamp(
+          this.desiredDistance * Math.exp(-zoomSpeed * dt),
+          6.5,
+          52
+        );
+      }
+      if (this.heldKeys.has('ZoomOut')) {
+        this.desiredDistance = THREE.MathUtils.clamp(
+          this.desiredDistance * Math.exp(zoomSpeed * dt),
+          6.5,
+          52
+        );
+      }
+    } else if (this.autoRotateSpeed !== 0 && !this.isOrbiting) {
       this.desiredAzimuth += this.autoRotateSpeed * dt;
     }
 

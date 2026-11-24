@@ -11,6 +11,7 @@ export interface BuiltEnvironment {
   hemiLight: THREE.HemisphereLight;
   skyMesh: THREE.Mesh;
   windAnimatedMeshes: THREE.Object3D[];
+  updateBackgroundOcclusion: (cameraPos: THREE.Vector3, targetPos: THREE.Vector3, dt: number) => void;
 }
 
 function makeRng(seed: number): () => number {
@@ -828,10 +829,70 @@ export function buildEnvironment(
   group.add(rockInst);
 
   // 8. Towering Backdrop Cascadia Forest (Instanced Conifer Ring on surrounding ridges!)
+  // Includes per-instance misty dissolve fade so background trees obstructing the camera smoothly fade out!
+  const applyBgTreeFadeShader = (mat: THREE.MeshStandardMaterial) => {
+    mat.customProgramCacheKey = () => 'bg-tree-dither-fade';
+    mat.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          attribute float aFade;
+          varying float vBgFade;`
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+          vBgFade = aFade;`
+        );
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+          varying float vBgFade;
+          float bgBayer4x4(vec2 p) {
+            int x = int(mod(p.x, 4.0));
+            int y = int(mod(p.y, 4.0));
+            int idx = y * 4 + x;
+            if (idx == 0) return 0.0 / 16.0;
+            if (idx == 1) return 8.0 / 16.0;
+            if (idx == 2) return 2.0 / 16.0;
+            if (idx == 3) return 10.0 / 16.0;
+            if (idx == 4) return 12.0 / 16.0;
+            if (idx == 5) return 4.0 / 16.0;
+            if (idx == 6) return 14.0 / 16.0;
+            if (idx == 7) return 6.0 / 16.0;
+            if (idx == 8) return 3.0 / 16.0;
+            if (idx == 9) return 11.0 / 16.0;
+            if (idx == 10) return 1.0 / 16.0;
+            if (idx == 11) return 9.0 / 16.0;
+            if (idx == 12) return 15.0 / 16.0;
+            if (idx == 13) return 7.0 / 16.0;
+            if (idx == 14) return 13.0 / 16.0;
+            return 5.0 / 16.0;
+          }`
+        )
+        .replace(
+          '#include <dithering_fragment>',
+          `if (vBgFade < 0.995) {
+            if (vBgFade < 0.03) discard;
+            #ifdef USE_FOG
+              gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, (1.0 - vBgFade) * 0.55);
+            #endif
+            float bayer = bgBayer4x4(floor(gl_FragCoord.xy));
+            if (vBgFade <= bayer) discard;
+          }
+          #include <dithering_fragment>`
+        );
+    };
+  };
+
   const bgTreeCount = 195;
   const bgTrunkGeo = new THREE.CylinderGeometry(0.18, 0.45, 11, 6);
   bgTrunkGeo.translate(0, 5.5, 0);
   const bgTrunkMat = new THREE.MeshStandardMaterial({ color: '#453022', roughness: 0.95 });
+  applyBgTreeFadeShader(bgTrunkMat);
 
   const bgCone1Geo = new THREE.ConeGeometry(3.4, 10.5, 7);
   bgCone1Geo.translate(0, 9.2, 0);
@@ -845,12 +906,23 @@ export function buildEnvironment(
     roughness: 0.88,
     flatShading: true,
   });
+  applyBgTreeFadeShader(bgFolMat);
+
+  const bgFadeArray = new Float32Array(bgTreeCount).fill(1);
+  const bgFadeAttr = new THREE.InstancedBufferAttribute(bgFadeArray, 1);
+  bgFadeAttr.setUsage(THREE.DynamicDrawUsage);
+  bgTrunkGeo.setAttribute('aFade', bgFadeAttr);
+  bgCone1Geo.setAttribute('aFade', bgFadeAttr);
+  bgCone2Geo.setAttribute('aFade', bgFadeAttr);
+  bgCone3Geo.setAttribute('aFade', bgFadeAttr);
 
   const bgTrunks = new THREE.InstancedMesh(bgTrunkGeo, bgTrunkMat, bgTreeCount);
   const bgFol1 = new THREE.InstancedMesh(bgCone1Geo, bgFolMat, bgTreeCount);
   const bgFol2 = new THREE.InstancedMesh(bgCone2Geo, bgFolMat, bgTreeCount);
   const bgFol3 = new THREE.InstancedMesh(bgCone3Geo, bgFolMat, bgTreeCount);
   bgFol1.receiveShadow = true;
+
+  const bgTreeMeta: Array<{ x: number; y: number; z: number; rMax: number; yMax: number; fade: number }> = [];
 
   const col = new THREE.Color();
   let tPlaced = 0;
@@ -864,16 +936,28 @@ export function buildEnvironment(
     const tz = Math.sin(angle) * dist;
     const ty = getTerrainHeight(tx, tz, contract.site);
     const scale = 0.72 + rand() * 0.95;
+    const sx = scale * (0.85 + rand() * 0.3);
+    const sy = scale * (0.85 + rand() * 0.45);
+    const sz = scale * (0.85 + rand() * 0.3);
 
     dummy.position.set(tx, ty - 0.5, tz);
     dummy.rotation.set(0, rand() * Math.PI * 2, (rand() - 0.5) * 0.04);
-    dummy.scale.set(scale * (0.85 + rand() * 0.3), scale * (0.85 + rand() * 0.45), scale * (0.85 + rand() * 0.3));
+    dummy.scale.set(sx, sy, sz);
     dummy.updateMatrix();
 
     bgTrunks.setMatrixAt(tPlaced, dummy.matrix);
     bgFol1.setMatrixAt(tPlaced, dummy.matrix);
     bgFol2.setMatrixAt(tPlaced, dummy.matrix);
     bgFol3.setMatrixAt(tPlaced, dummy.matrix);
+
+    bgTreeMeta.push({
+      x: tx,
+      y: ty - 0.5,
+      z: tz,
+      rMax: 3.55 * Math.max(sx, sz),
+      yMax: ty - 0.5 + 22.8 * sy,
+      fade: 1,
+    });
 
     // Rich PNW forest color variation (Douglas fir emerald, Sitka spruce teal, cedar olive)
     col.setHSL(0.35 + (rand() - 0.5) * 0.08, 0.36 + rand() * 0.14, 0.22 + rand() * 0.11);
@@ -896,6 +980,66 @@ export function buildEnvironment(
 
   group.add(bgTrunks, bgFol1, bgFol2, bgFol3);
 
+  const updateBackgroundOcclusion = (cameraPos: THREE.Vector3, targetPos: THREE.Vector3, dt: number): void => {
+    const dx = targetPos.x - cameraPos.x;
+    const dy = targetPos.y - cameraPos.y;
+    const dz = targetPos.z - cameraPos.z;
+    const horizLenSq = dx * dx + dz * dz;
+    const invHorizLenSq = horizLenSq > 0.001 ? 1 / horizLenSq : 0;
+    const lerpRate = Math.min(1, 9.5 * dt);
+    let dirty = false;
+
+    for (let i = 0; i < bgTreeMeta.length; i++) {
+      const m = bgTreeMeta[i];
+      let targetFade = 1;
+
+      // 1. Direct camera proximity fade (prevents camera clipping inside a nearby conifer)
+      const camHorizDist = Math.hypot(m.x - cameraPos.x, m.z - cameraPos.z);
+      const nearPad = m.rMax + 5.2;
+      if (camHorizDist < nearPad + 3.0 && cameraPos.y >= m.y - 3.0 && cameraPos.y <= m.yMax + 4.0) {
+        const nearFactor = THREE.MathUtils.clamp((camHorizDist - (m.rMax + 2.6)) / 4.2, 0, 1);
+        targetFade = Math.min(targetFade, nearFactor);
+      }
+
+      // 2. Camera -> target sight corridor fade (dissolves trees sitting between camera and active tree)
+      if (invHorizLenSq > 0) {
+        const uRaw = ((m.x - cameraPos.x) * dx + (m.z - cameraPos.z) * dz) * invHorizLenSq;
+        if (uRaw > -0.15 && uRaw < 0.96) {
+          const u = THREE.MathUtils.clamp(uRaw, 0, 1);
+          const px = cameraPos.x + dx * u;
+          const py = cameraPos.y + dy * u;
+          const pz = cameraPos.z + dz * u;
+
+          if (py >= m.y - 3.5 && py <= m.yMax + 4.0) {
+            const perpDist = Math.hypot(m.x - px, m.z - pz);
+            // Wider clearance closer to camera where a tree fills more of the screen
+            const clearRadius = m.rMax + 2.2 + (1 - u) * 3.0;
+            const softBand = 3.2;
+            if (perpDist < clearRadius + softBand) {
+              const sightFactor = THREE.MathUtils.clamp((perpDist - clearRadius) / softBand, 0, 1);
+              targetFade = Math.min(targetFade, sightFactor);
+            }
+          }
+        }
+      }
+
+      const nextFade = m.fade + (targetFade - m.fade) * lerpRate;
+      if (Math.abs(nextFade - m.fade) > 0.002) {
+        m.fade = nextFade;
+        bgFadeArray[i] = nextFade;
+        dirty = true;
+      } else if (m.fade !== targetFade) {
+        m.fade = targetFade;
+        bgFadeArray[i] = targetFade;
+        dirty = true;
+      }
+    }
+
+    if (dirty) {
+      bgFadeAttr.needsUpdate = true;
+    }
+  };
+
   scene.add(group);
 
   return {
@@ -907,5 +1051,6 @@ export function buildEnvironment(
     hemiLight,
     skyMesh,
     windAnimatedMeshes,
+    updateBackgroundOcclusion,
   };
 }

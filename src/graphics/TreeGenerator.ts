@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import {
   BranchData,
   BuckRingData,
+  LogSegmentData,
   SpeciesSpec,
+  StandingTopCutData,
   TreePlacementSpec,
   TreeRuntime,
 } from '../types';
@@ -35,7 +37,7 @@ function buildFlutedTrunkGeometry(
     height,
     radialSegs,
     heightSegs,
-    false
+    true
   );
   // Shift cylinder so y = 0 is at the base
   geo.translate(0, height / 2, 0);
@@ -57,10 +59,12 @@ function buildFlutedTrunkGeometry(
       z *= scale;
     }
 
-    // Subtle trunk organic wobble + natural lean curve
-    const curvePower = Math.pow(t, 1.35);
-    x += leanX * curvePower + Math.sin(t * Math.PI * 2.2) * bottomRadius * 0.12;
-    z += leanZ * curvePower + Math.cos(t * Math.PI * 1.7) * bottomRadius * 0.12;
+    // Subtle trunk organic wobble + natural lean curve (zero offset at base/top when lean=0 for flush stump seam)
+    if (leanX !== 0 || leanZ !== 0) {
+      const curvePower = Math.pow(t, 1.35);
+      x += leanX * curvePower + Math.sin(t * Math.PI * 2.2) * bottomRadius * 0.12;
+      z += leanZ * curvePower + (Math.cos(t * Math.PI * 1.7) - 1) * bottomRadius * 0.12;
+    }
 
     // Western Hemlock's iconic drooping leader tip
     if (droopingLeader && t > 0.87) {
@@ -208,7 +212,7 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     baseRadius * 1.06,
     baseRadius * 0.95,
     cutHeight,
-    16,
+    32,
     5,
     speciesSpec.buttressFlare,
     0,
@@ -221,10 +225,11 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   stumpMesh.userData = { treeId: spec.id, part: 'stump' };
   stumpGroup.add(stumpMesh);
 
-  // Stump top end-grain cap (visible once tree starts tipping)
-  const stumpCapGeo = new THREE.CylinderGeometry(baseRadius * 0.94, baseRadius * 0.94, 0.04, 16);
+  // Stump top end-grain cap (seamless flush CircleGeometry — zero Z-fighting!)
+  const stumpCapGeo = new THREE.CircleGeometry(baseRadius * 0.95, 32);
+  stumpCapGeo.rotateX(-Math.PI / 2);
   const stumpCap = new THREE.Mesh(stumpCapGeo, endGrainMat);
-  stumpCap.position.y = cutHeight - 0.01;
+  stumpCap.position.y = cutHeight;
   stumpCap.receiveShadow = true;
   stumpGroup.add(stumpCap);
 
@@ -242,77 +247,197 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
 
   const trunkTopRadius =
     speciesSpec.category === 'deciduous' ? baseRadius * 0.24 : baseRadius * 0.08;
-  const trunkGeo = buildFlutedTrunkGeometry(
-    baseRadius * 0.95,
-    trunkTopRadius,
-    upperHeight,
-    14,
-    14,
-    1.0,
-    leanX,
-    leanZ,
-    Boolean(speciesSpec.droopingLeader)
-  );
-  const trunkMesh = new THREE.Mesh(trunkGeo, barkMat);
-  trunkMesh.castShadow = true;
-  trunkMesh.receiveShadow = true;
-  trunkMesh.userData = { treeId: spec.id, part: 'trunk' };
-  trunkPivot.add(trunkMesh);
 
-  // Bottom end-grain cap on falling trunk
-  const trunkBottomCap = new THREE.Mesh(
-    new THREE.CylinderGeometry(baseRadius * 0.93, baseRadius * 0.93, 0.04, 14),
-    endGrainMat
-  );
-  trunkBottomCap.position.y = 0.02;
-  trunkPivot.add(trunkBottomCap);
+  const getTrunkCenterAt = (localY: number): THREE.Vector3 => {
+    const t = Math.max(0, Math.min(1, localY / upperHeight));
+    const cp = Math.pow(t, 1.35);
+    let dx = leanX * cp + Math.sin(t * Math.PI * 2.2) * baseRadius * 0.12;
+    const dz = leanZ * cp + (Math.cos(t * Math.PI * 1.7) - 1) * baseRadius * 0.12;
+    if (speciesSpec.droopingLeader && t > 0.87) {
+      const tipT = (t - 0.87) / 0.13;
+      dx += Math.pow(tipT, 2) * 1.15;
+    }
+    return new THREE.Vector3(dx, localY, dz);
+  };
 
-  // 3. Dynamic 3D Face Notch Cutout Indicator (scales dynamically as player saws the notch!)
+  const getTrunkRadiusAt = (localY: number): number => {
+    const t = Math.max(0, Math.min(1, localY / upperHeight));
+    return THREE.MathUtils.lerp(baseRadius * 0.95, trunkTopRadius, t);
+  };
+
+  // Optional standing top-down piecing cuts (descending total heights -> localY along trunkPivot)
+  const standingLocalYsDesc = (spec.standingTopCutHeights ?? [])
+    .map((h) => Math.max(4.5, Math.min(upperHeight - 2.5, h - cutHeight)))
+    .sort((a, b) => b - a);
+  const standingLocalYsAsc = [...standingLocalYsDesc].reverse();
+  const minStandingLocalY =
+    standingLocalYsAsc.length > 0 ? standingLocalYsAsc[0] : Infinity;
+
+  // Pre-compute bucking cut planes so the trunk is seamlessly built from real buckable sawlog segments!
+  const buckSpacing = 4.2;
+  const maxBuckDist = Math.min(
+    upperHeight * 0.68,
+    16.5,
+    minStandingLocalY < Infinity ? minStandingLocalY - 1.4 : Infinity
+  );
+  const buckCutDistances: number[] = [];
+  for (let d = 3.8; d <= maxBuckDist; d += buckSpacing) {
+    buckCutDistances.push(d);
+  }
+
+  const cutBounds = [0, ...buckCutDistances, ...standingLocalYsAsc, upperHeight];
+  const segments: LogSegmentData[] = [];
+
+  for (let sIdx = 0; sIdx < cutBounds.length - 1; sIdx++) {
+    const yStart = cutBounds[sIdx];
+    const yEnd = cutBounds[sIdx + 1];
+    const segLen = Math.max(0.2, yEnd - yStart);
+    const midY = (yStart + yEnd) / 2;
+    const midCenter = getTrunkCenterAt(midY);
+    const rStart = getTrunkRadiusAt(yStart);
+    const rEnd = getTrunkRadiusAt(yEnd);
+
+    const segGroup = new THREE.Group();
+    segGroup.position.copy(midCenter);
+
+    const radialSegs = sIdx === 0 ? 32 : 16;
+    const segHeightSegs = Math.max(4, Math.round((segLen / upperHeight) * 16));
+    const segGeo = new THREE.CylinderGeometry(rEnd, rStart, segLen, radialSegs, segHeightSegs, true);
+    const pos = segGeo.attributes.position;
+    const uv = segGeo.attributes.uv;
+    for (let vIdx = 0; vIdx < pos.count; vIdx++) {
+      const vx = pos.getX(vIdx);
+      const vy = pos.getY(vIdx); // -segLen/2 .. +segLen/2
+      const vz = pos.getZ(vIdx);
+      const globalY = midY + vy;
+      const c = getTrunkCenterAt(globalY);
+      pos.setXYZ(vIdx, vx + (c.x - midCenter.x), vy, vz + (c.z - midCenter.z));
+      // Keep bark V texture coordinate continuous seamlessly across segment boundaries!
+      uv.setY(vIdx, globalY / upperHeight);
+    }
+    segGeo.computeVertexNormals();
+
+    const segBarkMat = sIdx === 0 ? barkMat.clone() : barkMat;
+    const segBarkMesh = new THREE.Mesh(segGeo, segBarkMat);
+    segBarkMesh.castShadow = true;
+    segBarkMesh.receiveShadow = true;
+    segBarkMesh.userData = { treeId: spec.id, part: 'trunk' };
+    segGroup.add(segBarkMesh);
+
+    const startCenter = getTrunkCenterAt(yStart);
+    const endCenter = getTrunkCenterAt(yEnd);
+
+    // Bottom end-grain cross-section cap (visible on butt log immediately; revealed on cut for upper logs!)
+    const bottomCapGeo = new THREE.CircleGeometry(rStart, radialSegs);
+    bottomCapGeo.rotateX(Math.PI / 2);
+    const bottomCap = new THREE.Mesh(bottomCapGeo, endGrainMat);
+    bottomCap.position.set(startCenter.x - midCenter.x, yStart - midCenter.y, startCenter.z - midCenter.z);
+    bottomCap.visible = sIdx === 0;
+    segGroup.add(bottomCap);
+
+    // Top end-grain cross-section cap (revealed when this segment's upper bucking cut is sliced!)
+    const topCapGeo = new THREE.CircleGeometry(rEnd, radialSegs);
+    topCapGeo.rotateX(-Math.PI / 2);
+    const topCap = new THREE.Mesh(topCapGeo, endGrainMat);
+    topCap.position.set(endCenter.x - midCenter.x, yEnd - midCenter.y, endCenter.z - midCenter.z);
+    topCap.visible = false;
+    segGroup.add(topCap);
+
+    trunkPivot.add(segGroup);
+    segments.push({
+      index: sIdx,
+      yStart,
+      yEnd,
+      avgRadius: (rStart + rEnd) * 0.5,
+      group: segGroup,
+      barkMesh: segBarkMesh,
+      bottomCap,
+      topCap,
+      detached: false,
+    });
+  }
+
+  const trunkMesh = segments[0].barkMesh;
+
+  const findSegmentForY = (y: number): LogSegmentData => {
+    for (const seg of segments) {
+      if (y <= seg.yEnd) return seg;
+    }
+    return segments[segments.length - 1];
+  };
+
+  // Exact local trunk metrics for the Humboldt face notch & back cut (kept cleanly above stumpCap at y=0!)
+  const cutTopY = Math.min(0.84, Math.max(0.56, baseRadius * 1.18));
+  const cutCenter3 = getTrunkCenterAt(cutTopY);
+  const cutCenterXZ = new THREE.Vector2(cutCenter3.x, cutCenter3.z);
+  const cutRadius = getTrunkRadiusAt(cutTopY);
+  const cutRadiusSlope = (trunkTopRadius - baseRadius * 0.95) / Math.max(1, upperHeight);
+
+  // Local-space shader uniforms punch exact Humboldt notch & back-cut kerf in segments[0] bark
+  const cutShaderUniforms: TreeRuntime['cutShaderUniforms'] = {
+    uSeg0Pos: { value: segments[0].group.position.clone() },
+    uCutCenterXZ: { value: cutCenterXZ.clone() },
+    uAimDir: { value: new THREE.Vector2(1, 0) },
+    uFaceEnabled: { value: 0 },
+    uFaceTopY: { value: cutTopY },
+    uFaceHingeX: { value: cutRadius },
+    uFaceSlope: { value: 1.08 },
+    uBackEnabled: { value: 0 },
+    uBackCenterY: { value: cutTopY + 0.07 },
+    uBackHalfH: { value: 0.03 },
+    uBackTipX: { value: -cutRadius },
+  };
+  applyTrunkCutDiscardShader(
+    segments[0].barkMesh.material as THREE.MeshStandardMaterial,
+    cutShaderUniforms
+  );
+
+  // 3. Humboldt Face Notch (2 clean cylindrical-segment wood faces: flat horizontal ceiling + 47° sloped floor)
   const notchCutoutGroup = new THREE.Group();
-  notchCutoutGroup.position.y = 0.06;
+  notchCutoutGroup.position.set(cutCenterXZ.x, 0, cutCenterXZ.y);
   notchCutoutGroup.visible = false;
 
-  // Dark carved V-cavity + bright fresh heartwood floor/ceiling faces
-  const notchDarkMat = new THREE.MeshStandardMaterial({
-    color: '#1f120b',
-    roughness: 0.95,
+  const notchCeilingMat = new THREE.MeshStandardMaterial({
+    map: barkSet.endGrainMap,
+    color: '#b5906a',
+    roughness: 0.85,
+    metalness: 0.02,
+    vertexColors: true,
   });
-  const notchWedgeGeo = new THREE.BoxGeometry(baseRadius * 1.15, baseRadius * 0.72, baseRadius * 1.85);
-  const notchCavity = new THREE.Mesh(notchWedgeGeo, notchDarkMat);
-  notchCavity.position.set(baseRadius * 0.56, 0.12, 0);
-  notchCutoutGroup.add(notchCavity);
+  const notchFloorMat = new THREE.MeshStandardMaterial({
+    map: barkSet.endGrainMap,
+    color: '#f2dec0',
+    roughness: 0.68,
+    metalness: 0.02,
+    vertexColors: true,
+  });
 
-  const notchFloor = new THREE.Mesh(
-    new THREE.BoxGeometry(baseRadius * 1.18, 0.07, baseRadius * 1.9),
-    freshWoodMat
-  );
-  notchFloor.position.set(baseRadius * 0.55, -0.14, 0);
-  notchCutoutGroup.add(notchFloor);
-
-  const notchSlope = new THREE.Mesh(
-    new THREE.BoxGeometry(baseRadius * 1.24, 0.07, baseRadius * 1.9),
-    freshWoodMat
-  );
-  notchSlope.position.set(baseRadius * 0.56, 0.24, 0);
-  notchSlope.rotation.z = -0.58;
-  notchCutoutGroup.add(notchSlope);
-
+  const notchCeiling = new THREE.Mesh(new THREE.BufferGeometry(), notchCeilingMat);
+  const notchFloor = new THREE.Mesh(new THREE.BufferGeometry(), notchFloorMat);
+  notchCeiling.receiveShadow = true;
+  notchFloor.receiveShadow = true;
+  notchCeiling.frustumCulled = false;
+  notchFloor.frustumCulled = false;
+  notchCutoutGroup.add(notchCeiling, notchFloor);
   trunkPivot.add(notchCutoutGroup);
 
-  // 4. Back Cut Kerf Slot (visible on opposite side of trunk as player saws back cut)
-  const backCutGeo = new THREE.BoxGeometry(baseRadius * 1.25, 0.11, baseRadius * 1.92);
-  const backCutMesh = new THREE.Mesh(
-    backCutGeo,
-    new THREE.MeshStandardMaterial({
-      color: '#f2b866',
-      emissive: '#3d220a',
-      emissiveIntensity: 0.4,
-      roughness: 0.65,
-    })
-  );
-  backCutMesh.position.set(-baseRadius * 0.55, 0.14, 0);
-  backCutMesh.visible = false;
-  trunkPivot.add(backCutMesh);
+  // 4. Back Cut Kerf (clean horizontal slot slightly above the Humboldt ceiling)
+  const backCutGroup = new THREE.Group();
+  backCutGroup.position.set(cutCenterXZ.x, 0, cutCenterXZ.y);
+  backCutGroup.visible = false;
+
+  const backTopFace = new THREE.Mesh(new THREE.BufferGeometry(), notchCeilingMat);
+  const backBottomFace = new THREE.Mesh(new THREE.BufferGeometry(), notchFloorMat);
+  const backHingeMat = new THREE.MeshStandardMaterial({
+    color: '#5a3820',
+    roughness: 0.9,
+  });
+  const backHingeWall = new THREE.Mesh(new THREE.BufferGeometry(), backHingeMat);
+  for (const m of [backTopFace, backBottomFace, backHingeWall]) {
+    m.frustumCulled = false;
+  }
+  backCutGroup.add(backTopFace, backBottomFace, backHingeWall);
+  trunkPivot.add(backCutGroup);
 
   // 5. Felling Wedges (3 high-vis forestry orange wedges tucked into the back cut!)
   const wedgeMeshes: THREE.Mesh[] = [];
@@ -322,11 +447,11 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     metalness: 0.15,
   });
   for (let w = 0; w < 3; w++) {
-    const wGeo = new THREE.BoxGeometry(baseRadius * 0.72, 0.14, 0.18);
+    const wGeo = new THREE.BoxGeometry(baseRadius * 0.72, 0.11, 0.16);
     const wMesh = new THREE.Mesh(wGeo, wedgeMat);
-    const zOff = (w - 1) * baseRadius * 0.55;
-    wMesh.position.set(-baseRadius * 1.08, 0.14, zOff);
-    wMesh.rotation.z = 0.12;
+    const zOff = (w - 1) * baseRadius * 0.52;
+    wMesh.position.set(cutCenterXZ.x - baseRadius * 1.05, cutTopY + 0.07, cutCenterXZ.y + zOff);
+    wMesh.rotation.z = 0.08;
     wMesh.visible = false;
     wMesh.castShadow = true;
     trunkPivot.add(wMesh);
@@ -335,21 +460,6 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
 
   // 6. Generate Realistic Branches (Interactive Prunable Lower/Mid Branches + Crown Foliage)
   const branches: BranchData[] = [];
-
-  const getTrunkCenterAt = (localY: number): THREE.Vector3 => {
-    const t = Math.max(0, Math.min(1, localY / upperHeight));
-    const cp = Math.pow(t, 1.35);
-    return new THREE.Vector3(
-      leanX * cp + Math.sin(t * Math.PI * 2.2) * baseRadius * 0.12,
-      localY,
-      leanZ * cp + Math.cos(t * Math.PI * 1.7) * baseRadius * 0.12
-    );
-  };
-
-  const getTrunkRadiusAt = (localY: number): number => {
-    const t = Math.max(0, Math.min(1, localY / upperHeight));
-    return THREE.MathUtils.lerp(baseRadius * 0.95, trunkTopRadius, t);
-  };
 
   const totalInteractiveBranches =
     spec.species === 'bigleaf_maple'
@@ -379,7 +489,12 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
         ? 0.28 + (i / totalInteractiveBranches) * 0.44 + (rand() - 0.5) * 0.04
         : 0.18 + (i / totalInteractiveBranches) * 0.46 + (rand() - 0.5) * 0.035;
 
-    const attachY = Math.max(2.0, upperHeight * Math.min(0.76, heightFrac));
+    const rawAttachY = Math.max(2.0, upperHeight * Math.min(0.76, heightFrac));
+    // Keep required hazard limbs on the remaining lower spar so top-down piecing never deadlocks pruning
+    const attachY =
+      isTarget && minStandingLocalY < Infinity
+        ? Math.min(rawAttachY, Math.max(3.2, minStandingLocalY - 1.2 - (i % 4) * 1.15))
+        : rawAttachY;
     const attachCenter = getTrunkCenterAt(attachY);
     const localTrunkR = getTrunkRadiusAt(attachY);
 
@@ -554,7 +669,9 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     colliderMesh.userData = { treeId: spec.id, branchId, part: 'branch' };
     branchGroup.add(colliderMesh);
 
-    trunkPivot.add(branchGroup);
+    const parentSeg = findSegmentForY(attachY);
+    branchGroup.position.sub(parentSeg.group.position);
+    parentSeg.group.add(branchGroup);
 
     branches.push({
       id: branchId,
@@ -575,28 +692,136 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     });
   }
 
-  // 7. Upper Crown Canopy (Non-prunable upper spire / dome so tree looks full & magnificent!)
+  // 7. Upper Crown Canopy
+  // Crown tiers overlapping the sawlog bucking zone become ground-limbable boughs once felled!
+  const groundLimbCutoffY = maxBuckDist + 2.8;
+
   const upperCrownGroup = new THREE.Group();
+  let crownLimbIdx = 0;
+
   if (speciesSpec.category === 'conifer') {
     const tiers = Math.floor(spec.height * 0.65);
     const startFrac = 0.52;
+    const crownStartY = upperHeight * startFrac;
+    const crownZoneSpan = Math.max(0.1, groundLimbCutoffY - crownStartY);
+    // Group all crown foliage overlapping the sawlog bucking zone into 4 cohesive
+    // limbable crown bough sections (2 bands x left/right) so limbing feels snappy & rewarding!
+    const crownSectionBuckets: Array<{
+      group: THREE.Group;
+      ySum: number;
+      count: number;
+      dirAngle: number;
+      maxReach: number;
+    }> = [];
+    for (let band = 0; band < 2; band++) {
+      for (let side = 0; side < 2; side++) {
+        crownSectionBuckets.push({
+          group: new THREE.Group(),
+          ySum: 0,
+          count: 0,
+          dirAngle: side * Math.PI + band * 1.1,
+          maxReach: 1.5,
+        });
+      }
+    }
+
     for (let tIdx = 0; tIdx < tiers; tIdx++) {
       const f = startFrac + (tIdx / tiers) * (0.98 - startFrac);
       const y = upperHeight * f;
       const center = getTrunkCenterAt(y);
       const crownRadius = (1 - (f - 0.15) / 0.88) * (spec.height * 0.24) + 0.55;
       const boughsInTier = f > 0.88 ? 3 : 5;
-      for (let b = 0; b < boughsInTier; b++) {
-        const a = (b / boughsInTier) * Math.PI * 2 + tIdx * 1.15 + rand() * 0.3;
-        const reach = crownRadius * (0.72 + rand() * 0.32);
-        const pad = createFoliageCluster(speciesSpec, Math.max(0.7, reach * 0.52), rand, false);
-        pad.position.set(
-          center.x + Math.cos(a) * reach * 0.65,
-          y - (spec.species === 'western_red_cedar' ? 0.35 : 0.1),
-          center.z + Math.sin(a) * reach * 0.65
-        );
-        upperCrownGroup.add(pad);
+
+      if (y <= groundLimbCutoffY) {
+        const band = y - crownStartY < crownZoneSpan * 0.5 ? 0 : 1;
+        for (let b = 0; b < boughsInTier; b++) {
+          const a = (b / boughsInTier) * Math.PI * 2 + tIdx * 1.15 + rand() * 0.3;
+          const reach = crownRadius * (0.72 + rand() * 0.32);
+          const pad = createFoliageCluster(speciesSpec, Math.max(0.7, reach * 0.52), rand, false);
+          pad.position.set(
+            center.x + Math.cos(a) * reach * 0.65,
+            y - (spec.species === 'western_red_cedar' ? 0.35 : 0.1),
+            center.z + Math.sin(a) * reach * 0.65
+          );
+          const side = Math.cos(a - band * 1.1) >= 0 ? 0 : 1;
+          const bucket = crownSectionBuckets[band * 2 + side];
+          bucket.group.add(pad);
+          bucket.ySum += y;
+          bucket.count++;
+          bucket.maxReach = Math.max(bucket.maxReach, reach);
+        }
+      } else {
+        const tierSeg = findSegmentForY(y);
+        for (let b = 0; b < boughsInTier; b++) {
+          const a = (b / boughsInTier) * Math.PI * 2 + tIdx * 1.15 + rand() * 0.3;
+          const reach = crownRadius * (0.72 + rand() * 0.32);
+          const pad = createFoliageCluster(speciesSpec, Math.max(0.7, reach * 0.52), rand, false);
+          pad.position.set(
+            center.x + Math.cos(a) * reach * 0.65 - tierSeg.group.position.x,
+            y - (spec.species === 'western_red_cedar' ? 0.35 : 0.1) - tierSeg.group.position.y,
+            center.z + Math.sin(a) * reach * 0.65 - tierSeg.group.position.z
+          );
+          tierSeg.group.add(pad);
+        }
       }
+    }
+
+    // Finalize each non-empty crown section bucket as a ground-limbable BranchData!
+    for (const bucket of crownSectionBuckets) {
+      if (bucket.count === 0) continue;
+      const avgY = bucket.ySum / bucket.count;
+      const center = getTrunkCenterAt(avgY);
+      const localR = getTrunkRadiusAt(avgY);
+      const outDir = new THREE.Vector3(Math.cos(bucket.dirAngle), 0, Math.sin(bucket.dirAngle)).normalize();
+
+      // Re-center children relative to bucket pivot at trunk attachment so tumbling physics rotate nicely!
+      const boughGroup = new THREE.Group();
+      boughGroup.position.set(center.x, avgY, center.z);
+      while (bucket.group.children.length > 0) {
+        const child = bucket.group.children[0];
+        child.position.sub(boughGroup.position);
+        boughGroup.add(child);
+      }
+
+      const bId = `${spec.id}-crown-${crownLimbIdx++}`;
+      const collarRing = new THREE.Mesh(
+        new THREE.TorusGeometry(Math.max(0.28, localR * 1.45), 0.065, 8, 18),
+        new THREE.MeshBasicMaterial({
+          color: '#22c55e',
+          transparent: true,
+          opacity: 0.0,
+        })
+      );
+      collarRing.rotation.y = -bucket.dirAngle + Math.PI / 2;
+      collarRing.position.set(outDir.x * localR * 0.9, 0, outDir.z * localR * 0.9);
+      boughGroup.add(collarRing);
+
+      const colGeo = new THREE.SphereGeometry(Math.max(1.6, bucket.maxReach * 0.72), 8, 6);
+      const colMesh = new THREE.Mesh(colGeo, new THREE.MeshBasicMaterial({ visible: false }));
+      colMesh.position.set(outDir.x * bucket.maxReach * 0.55, 0, outDir.z * bucket.maxReach * 0.55);
+      colMesh.userData = { treeId: spec.id, branchId: bId, part: 'branch' };
+      boughGroup.add(colMesh);
+
+      const crownSeg = findSegmentForY(avgY);
+      boughGroup.position.sub(crownSeg.group.position);
+      crownSeg.group.add(boughGroup);
+      branches.push({
+        id: bId,
+        treeId: spec.id,
+        meshGroup: boughGroup,
+        colliderMesh: colMesh,
+        collarRing,
+        attachLocalPos: new THREE.Vector3(center.x, avgY, center.z),
+        worldDirection: outDir,
+        radius: Math.max(0.08, localR * 0.35),
+        length: bucket.maxReach,
+        weight: 0,
+        isTarget: false,
+        isHealthy: true,
+        groundLimbOnly: true,
+        cutProgress: 0,
+        pruned: false,
+      });
     }
     // Leader crown cap
     const topCenter = getTrunkCenterAt(upperHeight);
@@ -619,32 +844,71 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
       const px = domeCenter.x + Math.sin(phi) * Math.cos(theta) * r;
       const py = domeCenter.y + Math.cos(phi) * r * 0.72;
       const pz = domeCenter.z + Math.sin(phi) * Math.sin(theta) * r;
-      const cluster = createFoliageCluster(
-        speciesSpec,
-        spec.species === 'bigleaf_maple' ? 2.15 : 1.55,
-        rand,
-        false
-      );
-      cluster.position.set(px, py, pz);
-      upperCrownGroup.add(cluster);
+      const folScale = spec.species === 'bigleaf_maple' ? 2.15 : 1.55;
+      const cluster = createFoliageCluster(speciesSpec, folScale, rand, false);
+
+      if (py <= groundLimbCutoffY + 1.0) {
+        const boughGroup = new THREE.Group();
+        boughGroup.position.set(px, py, pz);
+        boughGroup.add(cluster);
+
+        const outDir = new THREE.Vector3(px - domeCenter.x, 0, pz - domeCenter.z).normalize();
+        const bId = `${spec.id}-crown-${crownLimbIdx++}`;
+        const collarRing = new THREE.Mesh(
+          new THREE.TorusGeometry(0.45, 0.055, 8, 18),
+          new THREE.MeshBasicMaterial({ color: '#22c55e', transparent: true, opacity: 0.0 })
+        );
+        boughGroup.add(collarRing);
+
+        const colMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(folScale * 0.85, 8, 6),
+          new THREE.MeshBasicMaterial({ visible: false })
+        );
+        colMesh.userData = { treeId: spec.id, branchId: bId, part: 'branch' };
+        boughGroup.add(colMesh);
+
+        const decSeg = findSegmentForY(Math.min(py, maxBuckDist + 1.2));
+        boughGroup.position.sub(decSeg.group.position);
+        decSeg.group.add(boughGroup);
+        branches.push({
+          id: bId,
+          treeId: spec.id,
+          meshGroup: boughGroup,
+          colliderMesh: colMesh,
+          collarRing,
+          attachLocalPos: new THREE.Vector3(domeCenter.x, Math.min(py, maxBuckDist + 1.2), domeCenter.z),
+          worldDirection: outDir.lengthSq() > 0.01 ? outDir : new THREE.Vector3(1, 0, 0),
+          radius: 0.14,
+          length: folScale * 1.4,
+          weight: 0,
+          isTarget: false,
+          isHealthy: true,
+          groundLimbOnly: true,
+          cutProgress: 0,
+          pruned: false,
+        });
+      } else {
+        cluster.position.set(px, py, pz);
+        upperCrownGroup.add(cluster);
+      }
     }
   }
-  trunkPivot.add(upperCrownGroup);
+  const topSeg = segments[segments.length - 1];
+  upperCrownGroup.position.copy(topSeg.group.position).negate();
+  topSeg.group.add(upperCrownGroup);
 
   // 8. Bucking Cut Rings along the trunk (hidden until tree is fallen!)
   const buckRings: BuckRingData[] = [];
-  const buckSpacing = 4.2;
-  const maxBuckDist = Math.min(upperHeight * 0.68, 16.5);
-  let buckIdx = 0;
-  for (let d = 3.8; d <= maxBuckDist; d += buckSpacing) {
+  for (let buckIdx = 0; buckIdx < buckCutDistances.length; buckIdx++) {
+    const d = buckCutDistances[buckIdx];
     const rAtD = getTrunkRadiusAt(d);
     const centerAtD = getTrunkCenterAt(d);
     const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(rAtD * 1.25, 0.085, 10, 24),
+      new THREE.TorusGeometry(rAtD * 1.38, 0.105, 10, 24),
       new THREE.MeshBasicMaterial({
         color: '#facc15',
         transparent: true,
-        opacity: 0.9,
+        opacity: 0.92,
       })
     );
     ring.rotation.x = Math.PI / 2;
@@ -660,7 +924,52 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
       cutProgress: 0,
       cutDone: false,
     });
-    buckIdx++;
+  }
+
+  // 8b. Standing Top-Down Piecing Rings (ordered highest first; only the active top ring is shown!)
+  const standingTopCuts: StandingTopCutData[] = [];
+  for (let tIdx = 0; tIdx < standingLocalYsDesc.length; tIdx++) {
+    const localY = standingLocalYsDesc[tIdx];
+    const rAtY = getTrunkRadiusAt(localY);
+    const centerAtY = getTrunkCenterAt(localY);
+    const startSegmentIndex = segments.findIndex((seg) => Math.abs(seg.yStart - localY) < 0.05);
+    if (startSegmentIndex <= 0) continue;
+
+    const topCutId = `${spec.id}-top-${tIdx}`;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(Math.max(0.58, rAtY * 2.15), 0.145, 10, 28),
+      new THREE.MeshBasicMaterial({
+        color: '#facc15',
+        transparent: true,
+        opacity: 0.96,
+        depthTest: false,
+      })
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.copy(centerAtY);
+    ring.renderOrder = 12;
+    ring.visible = false;
+    ring.userData = { treeId: spec.id, topCutId, part: 'standing_top_cut' };
+    trunkPivot.add(ring);
+
+    const collider = new THREE.Mesh(
+      new THREE.CylinderGeometry(Math.max(1.75, rAtY * 4.6), Math.max(1.75, rAtY * 4.6), 2.5, 10),
+      new THREE.MeshBasicMaterial({ visible: false })
+    );
+    collider.position.copy(centerAtY);
+    collider.userData = { treeId: spec.id, topCutId, part: 'standing_top_cut' };
+    trunkPivot.add(collider);
+
+    standingTopCuts.push({
+      id: topCutId,
+      localY,
+      remainingHeight: cutHeight + localY,
+      startSegmentIndex,
+      ringMesh: ring,
+      colliderMesh: collider,
+      cutProgress: 0,
+      cutDone: false,
+    });
   }
 
   // 9. Ground Selection Ring around Tree Base
@@ -677,6 +986,25 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
   selectionRing.position.y = 0.08;
   rootGroup.add(selectionRing);
 
+  // Cache unique MeshStandardMaterials for camera-occlusion see-through fading
+  const occlusionMaterials: Array<{ mat: THREE.Material; baseOpacity: number }> = [];
+  const seenMats = new Set<THREE.Material>();
+  rootGroup.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const mat of mats) {
+      if (!mat || seenMats.has(mat)) continue;
+      // Skip UI/guide MeshBasicMaterials (collar rings, buck rings, selection ring, colliders)
+      if ((mat as THREE.MeshBasicMaterial).isMeshBasicMaterial) continue;
+      seenMats.add(mat);
+      occlusionMaterials.push({
+        mat,
+        baseOpacity: mat.opacity ?? 1,
+      });
+    }
+  });
+
   const initialAim = spec.dropZone ? spec.dropZone.angle : spec.leanAngle;
 
   const runtime: TreeRuntime = {
@@ -686,11 +1014,29 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     stumpGroup,
     trunkPivot,
     trunkMesh,
+    segments,
     notchCutoutGroup,
-    backCutMesh,
+    notchParts: {
+      ceiling: notchCeiling,
+      floor: notchFloor,
+    },
+    cutShaderUniforms,
+    cutTopY,
+    cutCenterXZ,
+    cutRadius,
+    cutRadiusSlope,
+    backCutGroup,
+    backCutParts: {
+      topFace: backTopFace,
+      bottomFace: backBottomFace,
+      hingeWall: backHingeWall,
+    },
     wedgeMeshes,
     branches,
     buckRings,
+    standingTopCuts,
+    topCutsCompleted: 0,
+    currentHeight: spec.height,
     baseRadius,
     cutHeight,
     stage: 'standing',
@@ -712,14 +1058,345 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
     hitHazards: [],
     prunedTargetCount: 0,
     prunedHealthyPenaltyCount: 0,
+    limbedCount: 0,
     buckedCount: 0,
     totalBuckCuts: buckRings.length,
     completed: false,
+    occlusionFade: 1,
+    occlusionMaterials,
     selectionRing,
   };
 
   recomputeTreeLean(runtime);
+  syncTrunkCutVisuals(runtime);
   return runtime;
+}
+
+/** Dispose previous BufferGeometry on a mesh and assign a fresh one. */
+function replaceMeshGeometry(mesh: THREE.Mesh, geo: THREE.BufferGeometry): void {
+  const prev = mesh.geometry;
+  mesh.geometry = geo;
+  if (prev && prev !== geo) prev.dispose();
+}
+
+type CutShaderUniforms = TreeRuntime['cutShaderUniforms'];
+
+/**
+ * Local-space bark fragment discard for segments[0]:
+ * Punches the exact analytical intersection of the cylindrical trunk with
+ * the two Humboldt face-notch saw planes (horizontal ceiling + 41° sloped floor)
+ * and the horizontal rear back-cut kerf.
+ */
+function applyTrunkCutDiscardShader(
+  mat: THREE.MeshStandardMaterial,
+  uniforms: CutShaderUniforms
+): void {
+  mat.customProgramCacheKey = () => 'trunk-cut-humboldt-local-v4';
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform vec3 uSeg0Pos;
+        varying vec3 vPivotPos;`
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vPivotPos = transformed + uSeg0Pos;`
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying vec3 vPivotPos;
+        uniform vec2 uCutCenterXZ;
+        uniform vec2 uAimDir;
+        uniform float uFaceEnabled;
+        uniform float uFaceTopY;
+        uniform float uFaceHingeX;
+        uniform float uFaceSlope;
+        uniform float uBackEnabled;
+        uniform float uBackCenterY;
+        uniform float uBackHalfH;
+        uniform float uBackTipX;`
+      )
+      .replace(
+        '#include <clipping_planes_fragment>',
+        `#include <clipping_planes_fragment>
+        if (uFaceEnabled > 0.5 || uBackEnabled > 0.5) {
+          float lx = dot(vPivotPos.xz - uCutCenterXZ, uAimDir);
+          if (uFaceEnabled > 0.5 && lx > uFaceHingeX) {
+            // Match inner bark radius (0.992) so the bark cleanly frames the sloped floor lip with zero gap
+            float yFloor = uFaceTopY - uFaceSlope * max(0.0, lx * 0.992 - uFaceHingeX);
+            if (vPivotPos.y < uFaceTopY - 0.002 && vPivotPos.y > yFloor) {
+              discard;
+            }
+          }
+          if (uBackEnabled > 0.5 && lx < uBackTipX) {
+            if (abs(vPivotPos.y - uBackCenterY) < uBackHalfH - 0.001) {
+              discard;
+            }
+          }
+        }`
+      );
+  };
+  mat.needsUpdate = true;
+}
+
+/**
+ * Builds one D-shaped cylindrical cross-section face for the Humboldt notch
+ * (either the flat horizontal ceiling or the 47° sloped floor) whose curved outer
+ * edge tracks the tapered trunk radius rAtY(y) flush inside the 32-sided bark cylinder.
+ */
+function buildCylindricalNotchFace(
+  rAtY: (y: number) => number,
+  xHinge: number,
+  yAtX: (x: number) => number,
+  faceDown: boolean,
+  steps = 28
+): THREE.BufferGeometry {
+  const yHinge = yAtX(xHinge);
+  const rHinge = rAtY(yHinge);
+  const clampedHinge = THREE.MathUtils.clamp(xHinge, -rHinge * 0.88, rHinge * 0.96);
+  const thetaMax = Math.acos(THREE.MathUtils.clamp(clampedHinge / rHinge, -0.999, 0.999));
+
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const inv2R = 1 / Math.max(0.01, rHinge * 2);
+
+  // Subtle ambient-occlusion gradient: darker inside deep V-crease apex, sunlit at outer bark rim
+  const hingeShade = faceDown ? 0.58 : 0.66;
+  const rimShade = faceDown ? 0.88 : 1.0;
+
+  for (let i = 0; i <= steps; i++) {
+    const theta = -thetaMax + (i / steps) * (thetaMax * 2);
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+
+    // 2 fixed-point iterations match exact tapered radius at height yArc
+    let rArc = rHinge;
+    let yArc = yHinge;
+    for (let it = 0; it < 2; it++) {
+      yArc = yAtX(Math.max(clampedHinge, rArc * cosT));
+      rArc = rAtY(yArc);
+    }
+    const xArc = Math.max(clampedHinge, rArc * cosT);
+    const zArc = rArc * sinT;
+    const zHinge = Math.min(Math.abs(zArc), Math.sqrt(Math.max(0, rHinge * rHinge - clampedHinge * clampedHinge))) * Math.sign(zArc);
+
+    // Hinge vertex (even index)
+    positions.push(clampedHinge, yHinge, zHinge);
+    uvs.push(0.5 + clampedHinge * inv2R, 0.5 + zHinge * inv2R);
+    colors.push(hingeShade, hingeShade * 0.94, hingeShade * 0.86);
+
+    // Outer bark-arc vertex (odd index)
+    positions.push(xArc, yArc, zArc);
+    uvs.push(0.5 + xArc * inv2R, 0.5 + zArc * inv2R);
+    colors.push(rimShade, rimShade, rimShade);
+  }
+
+  for (let i = 0; i < steps; i++) {
+    const h0 = i * 2;
+    const a0 = i * 2 + 1;
+    const h1 = (i + 1) * 2;
+    const a1 = (i + 1) * 2 + 1;
+    if (faceDown) {
+      // Normal points -Y (downward ceiling)
+      indices.push(h0, a0, a1, h0, a1, h1);
+    } else {
+      // Normal points (+slope, +1, 0) (upward & outward 47° floor)
+      indices.push(h0, h1, a1, h0, a1, a0);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Builds one D-shaped cylindrical horizontal face for the rear back-cut kerf
+ * on the -X side of the trunk (from -radius up to xTip).
+ */
+function buildCylindricalBackFace(
+  radius: number,
+  xTip: number,
+  yConst: number,
+  faceUp: boolean,
+  steps = 24
+): THREE.BufferGeometry {
+  const clampedTip = THREE.MathUtils.clamp(xTip, -radius * 0.96, radius * 0.88);
+  const alpha = Math.acos(THREE.MathUtils.clamp(-clampedTip / radius, -0.999, 0.999));
+
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  const inv2R = 1 / Math.max(0.01, radius * 2);
+
+  for (let i = 0; i <= steps; i++) {
+    const u = -alpha + (i / steps) * (alpha * 2);
+    const xArc = -radius * Math.cos(u);
+    const zArc = radius * Math.sin(u);
+
+    positions.push(clampedTip, yConst, zArc);
+    uvs.push(0.5 + clampedTip * inv2R, 0.5 + zArc * inv2R);
+    colors.push(0.55, 0.50, 0.45);
+
+    positions.push(xArc, yConst, zArc);
+    uvs.push(0.5 + xArc * inv2R, 0.5 + zArc * inv2R);
+    colors.push(0.95, 0.95, 0.95);
+  }
+
+  for (let i = 0; i < steps; i++) {
+    const h0 = i * 2;
+    const a0 = i * 2 + 1;
+    const h1 = (i + 1) * 2;
+    const a1 = (i + 1) * 2 + 1;
+    if (faceUp) {
+      indices.push(h0, a0, a1, h0, a1, h1);
+    } else {
+      indices.push(h0, h1, a1, h0, a1, a0);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Vertical inner wood wall at the advancing tip of the rear back-cut slot (faces -X). */
+function buildBackHingeWall(
+  xTip: number,
+  yBottom: number,
+  yTop: number,
+  zHalf: number
+): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(
+      [
+        xTip, yBottom, -zHalf,
+        xTip, yBottom, zHalf,
+        xTip, yTop, zHalf,
+        xTip, yTop, -zHalf,
+      ],
+      3
+    )
+  );
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Rebuilds the cylindrical Humboldt face notch & rear back-cut kerf
+ * and updates local-space bark-discard uniforms so the trunk cleanly opens
+ * into a crisp textbook wedge as the player saws.
+ */
+export function syncTrunkCutVisuals(tree: TreeRuntime): void {
+  const r = tree.cutRadius;
+  const yTop = tree.cutTopY;
+  const rotY = -tree.aimAngle;
+  const u = tree.cutShaderUniforms;
+
+  // Exact tapered inner radius at height y (nested flush inside the 32-sided bark cylinder)
+  const rAtY = (y: number) => (r + tree.cutRadiusSlope * (y - yTop)) * 0.995;
+
+  u.uAimDir.value.set(Math.cos(tree.aimAngle), Math.sin(tree.aimAngle));
+  u.uCutCenterXZ.value.copy(tree.cutCenterXZ);
+  u.uFaceTopY.value = yTop;
+
+  // --- 1. Humboldt Face Notch (flat horizontal top + ~47° sloped bottom rising to hinge) ---
+  const showFace = tree.notchDepth > 0.015 && tree.notchCutoutGroup.visible;
+  // notchDepth = 0.30 (ideal) -> depth ≈ 0.72 * r (~36% of diameter 2r)
+  const depth = Math.min(r * 1.16, r * (0.14 + tree.notchDepth * 1.92));
+  const xHinge = r - depth;
+  // Keep bottom of Humboldt mouth safely above stumpCap (y=0) even at max overcut
+  const maxOpenH = Math.max(0.16, yTop - 0.06);
+  const slope = Math.min(1.08, maxOpenH / Math.max(0.05, depth));
+
+  tree.notchCutoutGroup.position.set(tree.cutCenterXZ.x, 0, tree.cutCenterXZ.y);
+  tree.notchCutoutGroup.rotation.set(0, rotY, 0);
+  tree.notchCutoutGroup.scale.set(1, 1, 1);
+
+  u.uFaceEnabled.value = showFace ? 1 : 0;
+  u.uFaceHingeX.value = xHinge;
+  u.uFaceSlope.value = slope;
+
+  const faceKey = showFace ? Math.round(tree.notchDepth * 250) : -1;
+  if ((tree.notchCutoutGroup.userData.faceKey ?? -2) !== faceKey) {
+    tree.notchCutoutGroup.userData.faceKey = faceKey;
+    if (showFace) {
+      replaceMeshGeometry(
+        tree.notchParts.ceiling,
+        buildCylindricalNotchFace(rAtY, xHinge, () => yTop, true)
+      );
+      replaceMeshGeometry(
+        tree.notchParts.floor,
+        buildCylindricalNotchFace(
+          rAtY,
+          xHinge,
+          (x) => yTop - slope * Math.max(0, x - xHinge),
+          false
+        )
+      );
+    }
+  }
+
+  // --- 2. Rear Back Cut (horizontal kerf slot ~7cm above Humboldt ceiling) ---
+  const showBack = tree.backCutDepth > 0.015 && tree.backCutGroup.visible;
+  const yBack = yTop + 0.07;
+  const halfH = Math.max(0.028, r * 0.055);
+  const rBack = rAtY(yBack);
+  // Advances from -r toward xHinge, leaving a visible holding hinge near backCutDepth = 0.82
+  const spanToHinge = Math.max(r * 0.65, xHinge + r);
+  const backAdvance = Math.min(r * 1.82, spanToHinge * Math.min(1.04, tree.backCutDepth * 1.06));
+  const xBackTip = -r + backAdvance;
+
+  tree.backCutGroup.position.set(tree.cutCenterXZ.x, 0, tree.cutCenterXZ.y);
+  tree.backCutGroup.rotation.set(0, rotY, 0);
+  tree.backCutGroup.scale.set(1, 1, 1);
+
+  u.uBackEnabled.value = showBack ? 1 : 0;
+  u.uBackCenterY.value = yBack;
+  u.uBackHalfH.value = halfH;
+  u.uBackTipX.value = xBackTip;
+
+  const backKey = showBack ? Math.round(tree.backCutDepth * 250) : -1;
+  if ((tree.backCutGroup.userData.backKey ?? -2) !== backKey) {
+    tree.backCutGroup.userData.backKey = backKey;
+    if (showBack) {
+      const clampedTip = THREE.MathUtils.clamp(xBackTip, -rBack * 0.96, rBack * 0.88);
+      const zHalf = Math.sqrt(Math.max(0.0001, rBack * rBack - clampedTip * clampedTip));
+      replaceMeshGeometry(
+        tree.backCutParts.bottomFace,
+        buildCylindricalBackFace(rAtY(yBack - halfH), clampedTip, yBack - halfH, true)
+      );
+      replaceMeshGeometry(
+        tree.backCutParts.topFace,
+        buildCylindricalBackFace(rAtY(yBack + halfH), clampedTip, yBack + halfH, false)
+      );
+      replaceMeshGeometry(
+        tree.backCutParts.hingeWall,
+        buildBackHingeWall(clampedTip, yBack - halfH, yBack + halfH, zHalf)
+      );
+    }
+  }
 }
 
 /**
@@ -728,7 +1405,14 @@ export function buildTreeRuntime(spec: TreePlacementSpec): TreeRuntime {
  * Pruning heavy branches on the lean side visibly stabilizes the tree!
  */
 export function recomputeTreeLean(tree: TreeRuntime): void {
-  const baseLeanMag = tree.spec.leanStrength * 0.52;
+  // Pruning overhanging hazard limbs genuinely relieves a major portion of the tree's lean,
+  // while severe storm/coastal wind-lean contracts still retain trunk lean + wind pull.
+  const totalTargets = tree.spec.hazardBranches;
+  const remainingTargets = tree.branches.filter((b) => b.isTarget && !b.pruned).length;
+  const targetRemainingFrac = totalTargets > 0 ? remainingTargets / totalTargets : 1;
+  const heightRatio = Math.max(0.35, Math.min(1, tree.currentHeight / Math.max(1, tree.spec.height)));
+  const baseLeanMag =
+    tree.spec.leanStrength * (0.24 + 0.34 * targetRemainingFrac) * (0.58 + 0.42 * heightRatio);
   const vx = Math.cos(tree.spec.leanAngle) * baseLeanMag;
   const vz = Math.sin(tree.spec.leanAngle) * baseLeanMag;
 

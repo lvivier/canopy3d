@@ -199,7 +199,7 @@ export const CAMPAIGN_CONTRACTS: ContractSpec[] = [
     hazards: [
       { id: 'h-sap1', label: 'Protected Cedar Sapling', type: 'sapling', x: 3.5, z: -9.5, radius: 2.3 },
       { id: 'h-sap2', label: 'Protected Cedar Sapling', type: 'sapling', x: -9.5, z: 9.0, radius: 2.3 },
-      { id: 'h-sap3', label: 'Protected Cedar Sapling', type: 'sapling', x: 12.5, z: 8.5, radius: 2.3 },
+      { id: 'h-sap3', label: 'Protected Cedar Sapling', type: 'sapling', x: 15.0, z: 12.0, radius: 2.3 },
     ],
     trees: [
       {
@@ -358,10 +358,10 @@ export const CAMPAIGN_CONTRACTS: ContractSpec[] = [
     windAngle: -1.2,
     unlockedTools: ['prune', 'fell', 'wedge', 'buck'],
     briefing:
-      'Your master certification job on the upper Cascadia ridge: balance and fell a colossal 30m Douglas Fir and an ancient Western Red Cedar amidst gusty ridge winds and protected old-growth nurse saplings, then buck every prime log for maximum mill value.',
+      'Your master certification job on the upper Cascadia ridge: the Prime Landing pocket stops short of the Timber Scale Shed, so piece down the colossal 30m Douglas Fir from the top until its aim shadow clears the shed, balance and fell both giants, then buck every prime log.',
     tips: [
-      'A 30m Douglas Fir has massive reach—always double-check the far tip of your aim shadow against hazards!',
-      'Prune unbalanced upper limbs, carve a textbook 30% notch, leave a crisp 10% hinge, and tap wedges to overcome crosswind.',
+      'A 30m Douglas Fir is too tall for Prime Landing—hold Left-Click on the golden ring up the trunk (Chainsaw or Limb & Buck) to piece the top down until the aim shadow turns green!',
+      'Prune unbalanced limbs, carve a textbook 30% Humboldt notch, leave a crisp 10% hinge, and tap wedges to overcome crosswind.',
     ],
     basePayout: 2400,
     hazards: [
@@ -382,7 +382,8 @@ export const CAMPAIGN_CONTRACTS: ContractSpec[] = [
         task: 'prune_and_fell',
         hazardBranches: 4,
         hazardBranchAngle: -2.1,
-        dropZone: { x: 8.0, z: 4.0, angle: 0.48, length: 30.5, width: 5.5, label: 'Prime Landing' },
+        dropZone: { x: 3.6, z: 1.7, angle: 0.48, length: 16.5, width: 5.5, label: 'Prime Landing' },
+        standingTopCutHeights: [21.0, 15.0],
         requireBucking: true,
         seed: 801,
       },

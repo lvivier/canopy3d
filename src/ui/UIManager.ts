@@ -23,10 +23,10 @@ const TOOL_META: Record<ToolId, { name: string; key: string; icon: string; desc:
     desc: 'Lift back-leaning trunks',
   },
   buck: {
-    name: 'Bucking Saw',
+    name: 'Limb & Buck',
     key: '4',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="12" r="5"/><path d="M13 12h8M16 9l2 6M20 9l-1 6"/></svg>`,
-    desc: 'Slice fallen logs for value',
+    desc: 'Limb fallen logs & slice sawlogs',
   },
 };
 
@@ -154,8 +154,8 @@ export class UIManager {
 
         <div class="controls-legend">
           <span><b>Left-Click / Hold</b> Aim, Prune, Saw &amp; Wedge</span>
-          <span><b>Right-Click + Drag</b> Orbit Camera</span>
-          <span><b>Scroll Wheel</b> Zoom</span>
+          <span><b>Right-Click Drag / Arrows</b> Orbit Camera</span>
+          <span><b>Scroll / - =</b> Zoom</span>
         </div>
       </div>
     `;
@@ -405,7 +405,7 @@ export class UIManager {
         </div>
 
         <div class="dock-row">
-          <button class="orbit-btn" id="btn-orbit-left" title="Orbit Left (Q)">⟲</button>
+          <button class="orbit-btn" id="btn-orbit-left" title="Orbit Left (← or Q)">⟲</button>
           <div class="tool-dock" id="hud-tool-dock">
             ${(['prune', 'fell', 'wedge', 'buck'] as ToolId[])
               .map(
@@ -419,7 +419,7 @@ export class UIManager {
               )
               .join('')}
           </div>
-          <button class="orbit-btn" id="btn-orbit-right" title="Orbit Right (E)">⟳</button>
+          <button class="orbit-btn" id="btn-orbit-right" title="Orbit Right (→ or E)">⟳</button>
         </div>
       </div>
     `;
@@ -499,11 +499,14 @@ export class UIManager {
       fill.style.width = `${Math.max(4, pct)}%`;
       fill.style.left = v >= 0 ? '50%' : `${50 - pct}%`;
       if (state.leanInfo.needsWedge) {
+        const hasWedge = state.unlockedTools.includes('wedge');
         fill.style.background = '#f97316';
         lbl.textContent =
           state.leanInfo.wedgesDriven > 0
             ? `Back-Lean (${state.leanInfo.wedgesDriven} Wedge)`
-            : 'Back-Lean · Needs Wedge/Prune';
+            : hasWedge
+              ? 'Back-Lean · Needs Wedge/Prune'
+              : 'Back-Lean · Prune Heavy Limbs';
         lbl.style.color = '#fb923c';
       } else if (v > 0.15) {
         fill.style.background = '#34d399';

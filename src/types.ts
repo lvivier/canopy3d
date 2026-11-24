@@ -90,6 +90,8 @@ export interface TreePlacementSpec {
   dropZone?: DropZoneSpec;
   /** Require bucking into mill logs after felling */
   requireBucking?: boolean;
+  /** Optional standing top-down piecing cuts (descending total heights in meters, e.g. [21, 15]) */
+  standingTopCutHeights?: number[];
   /** Seed for deterministic procedural tree generation */
   seed: number;
 }
@@ -126,6 +128,8 @@ export interface BranchData {
   weight: number; // contributes to lean/center-of-gravity
   isTarget: boolean; // deadwood, overhanging, or hazard limb
   isHealthy: boolean;
+  /** Crown boughs only interactive for limbing once the tree is on the ground */
+  groundLimbOnly?: boolean;
   reason?: 'deadwood' | 'overhanging' | 'weight_balance' | 'storm_cracked';
   cutProgress: number; // 0..1
   pruned: boolean;
@@ -148,6 +152,32 @@ export interface BuckRingData {
   cutDone: boolean;
 }
 
+export interface StandingTopCutData {
+  id: string;
+  /** Local Y along trunkPivot where this standing top cut slices the stem */
+  localY: number;
+  /** Remaining total tree height (cutHeight + localY) after this round is removed */
+  remainingHeight: number;
+  /** First segment index detached by this standing cut */
+  startSegmentIndex: number;
+  ringMesh: THREE.Mesh;
+  colliderMesh: THREE.Mesh;
+  cutProgress: number;
+  cutDone: boolean;
+}
+
+export interface LogSegmentData {
+  index: number;
+  yStart: number;
+  yEnd: number;
+  avgRadius: number;
+  group: THREE.Group;
+  barkMesh: THREE.Mesh;
+  bottomCap: THREE.Mesh;
+  topCap: THREE.Mesh;
+  detached: boolean;
+}
+
 export interface TreeRuntime {
   spec: TreePlacementSpec;
   speciesSpec: SpeciesSpec;
@@ -155,11 +185,47 @@ export interface TreeRuntime {
   stumpGroup: THREE.Group;
   trunkPivot: THREE.Group; // rotates during felling!
   trunkMesh: THREE.Mesh;
+  segments: LogSegmentData[];
   notchCutoutGroup: THREE.Group;
-  backCutMesh: THREE.Mesh;
+  notchParts: {
+    ceiling: THREE.Mesh;
+    floor: THREE.Mesh;
+  };
+  /** Local-space uniforms punching exact Humboldt notch & back-cut kerf in butt-log bark */
+  cutShaderUniforms: {
+    uSeg0Pos: { value: THREE.Vector3 };
+    uCutCenterXZ: { value: THREE.Vector2 };
+    uAimDir: { value: THREE.Vector2 };
+    uFaceEnabled: { value: number };
+    uFaceTopY: { value: number };
+    uFaceHingeX: { value: number };
+    uFaceSlope: { value: number };
+    uBackEnabled: { value: number };
+    uBackCenterY: { value: number };
+    uBackHalfH: { value: number };
+    uBackTipX: { value: number };
+  };
+  /** Height (in trunkPivot local Y) of the horizontal Humboldt ceiling cut */
+  cutTopY: number;
+  /** Exact trunk centerline XZ offset (in trunkPivot local coords) at cutTopY */
+  cutCenterXZ: THREE.Vector2;
+  /** Exact trunk radius at cutTopY */
+  cutRadius: number;
+  /** Linear trunk radius taper slope (dr/dy) in butt log */
+  cutRadiusSlope: number;
+  backCutGroup: THREE.Group;
+  backCutParts: {
+    topFace: THREE.Mesh;
+    bottomFace: THREE.Mesh;
+    hingeWall: THREE.Mesh;
+  };
   wedgeMeshes: THREE.Mesh[];
   branches: BranchData[];
   buckRings: BuckRingData[];
+  standingTopCuts: StandingTopCutData[];
+  topCutsCompleted: number;
+  /** Live effective height of the tree (decreases as standing top rounds are pieced down) */
+  currentHeight: number;
   baseRadius: number;
   cutHeight: number;
   stage: TreeFellStage;
@@ -181,9 +247,14 @@ export interface TreeRuntime {
   hitHazards: string[];
   prunedTargetCount: number;
   prunedHealthyPenaltyCount: number;
+  limbedCount: number;
   buckedCount: number;
   totalBuckCuts: number;
   completed: boolean;
+  /** 1 = fully opaque; lerps down when this tree blocks the camera's view of the active subject */
+  occlusionFade: number;
+  /** Cached MeshStandardMaterials for smooth occlusion fade (excludes UI rings) */
+  occlusionMaterials: Array<{ mat: THREE.Material; baseOpacity: number }>;
   /** Selection highlight ring at base */
   selectionRing: THREE.Mesh;
   /** Drop zone visual meshes */
