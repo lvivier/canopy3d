@@ -12,6 +12,8 @@ export type PbrTextureId =
   | 'arbutus_bark'
   | 'ponderosa_pine_bark'
   | 'aspen_bark'
+  | 'windmill_palm_bark'
+  | 'giant_sequoia_bark'
   | 'sawn_end_grain'
   | 'leaves_forest_ground'
   | 'grass_path_3'
@@ -181,6 +183,16 @@ export const SPECIES_BARK_PROFILES: Record<SpeciesId, SpeciesBarkProfile> = {
     mossAffinity: 0.35,
     wetSheen: 0.52,
   },
+  giant_sequoia: {
+    textureId: 'giant_sequoia_bark',
+    tint: '#f6ebe2',
+    normalScale: 1.65,
+    roughness: 0.95,
+    aoIntensity: 0.76,
+    metersPerTileV: 2.8,
+    mossAffinity: 0.1,
+    wetSheen: 0.3,
+  },
   rhododendron: {
     textureId: 'bark_brown_01',
     tint: '#d8c8bc',
@@ -260,6 +272,16 @@ export const SPECIES_BARK_PROFILES: Record<SpeciesId, SpeciesBarkProfile> = {
     metersPerTileV: 1.6,
     mossAffinity: 0.05,
     wetSheen: 0.78,
+  },
+  windmill_palm: {
+    textureId: 'windmill_palm_bark',
+    tint: '#ffffff',
+    normalScale: 1.45,
+    roughness: 0.94,
+    aoIntensity: 0.56,
+    metersPerTileV: 0.92,
+    mossAffinity: 0.14,
+    wetSheen: 0.25,
   },
 };
 

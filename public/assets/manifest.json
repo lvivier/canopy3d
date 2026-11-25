@@ -105,6 +105,20 @@
       "arm": "assets/textures/aspen_bark/arm.webp",
       "source": "Generated + Delighted PBR Extractor"
     },
+    "windmill_palm_bark": {
+      "diff": "assets/textures/windmill_palm_bark/diff.webp",
+      "diff1k": "assets/textures/windmill_palm_bark/diff_1k.webp",
+      "nor": "assets/textures/windmill_palm_bark/nor.webp",
+      "arm": "assets/textures/windmill_palm_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
+    "giant_sequoia_bark": {
+      "diff": "assets/textures/giant_sequoia_bark/diff.webp",
+      "diff1k": "assets/textures/giant_sequoia_bark/diff_1k.webp",
+      "nor": "assets/textures/giant_sequoia_bark/nor.webp",
+      "arm": "assets/textures/giant_sequoia_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
     "sawn_end_grain": {
       "diff": "assets/textures/sawn_end_grain/diff.webp",
       "diff1k": "assets/textures/sawn_end_grain/diff_1k.webp",

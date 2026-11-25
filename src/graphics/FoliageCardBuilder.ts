@@ -13,6 +13,7 @@ export type BotanicalSprigId =
   | 'sitka_spruce'
   | 'western_hemlock'
   | 'california_redwood'
+  | 'giant_sequoia'
   // Group 2 — Interior & Alpine Conifers
   | 'ponderosa_pine'
   | 'western_larch'
@@ -35,7 +36,10 @@ export type BotanicalSprigId =
   | 'smoke_tree'
   | 'smoke_tree_leaves'
   | 'rhododendron'
-  | 'rhododendron_leaves';
+  | 'rhododendron_leaves'
+  // Group 6 — Coastal Town Ornamental Palms
+  | 'windmill_palm'
+  | 'windmill_palm_dead';
 
 interface ConiferHabitProfile {
   /** Base pitch (rad) at lower crown: negative tilts UPWARD, positive droops DOWNWARD */
@@ -236,6 +240,29 @@ const SPRIG_CONFIGS: Record<BotanicalSprigId, SprigAssetConfig> = {
       twigLiftHigh: 0.2,
       cardScale: 1.12,
       crossCountHigh: 6,
+    },
+  },
+  giant_sequoia: {
+    id: 'giant_sequoia',
+    anchor: 'bottom',
+    roughness: 0.78,
+    normalScale: 0.72,
+    sssStrength: 0.28,
+    flutterScale: 0.46,
+    alphaTest: 0.35,
+    twigColor: '#863c20',
+    // Glaucous blue-green & silvery-sage Sierra scale foliage tufts
+    tintPalette: ['#ebf4ee', '#dcece2', '#f2f7f2', '#cfe2d8', '#e2f0e8'],
+    coniferHabit: {
+      // Bold, dense, billowing upward-cupped monarch cloud tufts
+      pitchLow: -0.05,
+      pitchHigh: -0.54,
+      archLow: 0.06,
+      archHigh: -0.2,
+      twigLiftLow: 0.06,
+      twigLiftHigh: 0.36,
+      cardScale: 1.24,
+      crossCountHigh: 8,
     },
   },
   // Group 2 — Interior & Alpine Conifers
@@ -695,6 +722,30 @@ const SPRIG_CONFIGS: Record<BotanicalSprigId, SprigAssetConfig> = {
     alphaTest: 0.38,
     tintPalette: ['#ffffff', '#f2e4d6', '#e6d6c4', '#dbcab6'],
   },
+  windmill_palm: {
+    id: 'windmill_palm',
+    anchor: 'bottom',
+    roughness: 0.54,
+    normalScale: 0.82,
+    sssStrength: 0.44,
+    flutterScale: 0.72,
+    alphaTest: 0.34,
+    twigColor: '#4e6328',
+    // Rich coastal BC Trachycarpus greens: deep glossy emerald, sunlit olive-lime, slightly sun-bronzed lower fans
+    tintPalette: ['#f4f8e8', '#e6f0d4', '#eef5dc', '#dce8c6', '#f2e8be'],
+  },
+  windmill_palm_dead: {
+    id: 'windmill_palm_dead',
+    anchor: 'bottom',
+    roughness: 0.92,
+    normalScale: 0.92,
+    sssStrength: 0.06,
+    flutterScale: 0.44,
+    alphaTest: 0.34,
+    twigColor: '#69533a',
+    // Weathered coastal chestnut-taupe & sun-bleached straw dead palm skirt fronds
+    tintPalette: ['#c4ae90', '#b59d7e', '#a89072', '#9c866b', '#cbb696'],
+  },
 };
 
 export function isBotanicalPrototypeSpecies(speciesId: SpeciesId): boolean {
@@ -722,7 +773,12 @@ export function getFoliageParticleSprite(
 ): FoliageParticleSprite | null {
   let id: BotanicalSprigId;
   if (opts.deadwood) {
-    id = opts.category === 'conifer' ? 'deadwood_conifer' : 'deadwood';
+    id =
+      speciesId === 'windmill_palm'
+        ? 'windmill_palm_dead'
+        : opts.category === 'conifer'
+          ? 'deadwood_conifer'
+          : 'deadwood';
   } else if (isBotanicalPrototypeSpecies(speciesId)) {
     id = LEAF_PARTICLE_SPRIG[speciesId] ?? (speciesId as BotanicalSprigId);
   } else {
@@ -874,7 +930,12 @@ export function createTreeBotanicalContext(
   if (!isBotanicalPrototypeSpecies(speciesId)) return null;
 
   const liveId = speciesId as BotanicalSprigId;
-  const deadId: BotanicalSprigId = category === 'conifer' ? 'deadwood_conifer' : 'deadwood';
+  const deadId: BotanicalSprigId =
+    speciesId === 'windmill_palm'
+      ? 'windmill_palm_dead'
+      : category === 'conifer'
+        ? 'deadwood_conifer'
+        : 'deadwood';
   const live = createTreeSprigMaterial(liveId, quality, windUniforms);
   const dead = createTreeSprigMaterial(deadId, quality, windUniforms);
   const leafOnlyId = SPRIG_CONFIGS[liveId]?.broadleafHabit?.bloomDistribution?.leafOnlySprigId;
@@ -1832,5 +1893,459 @@ export function buildBackdropConiferCrownAssets(quality: GraphicsQuality): {
     geometry: finalizeBufferGeometry(buf, true),
     map: tex.map,
   };
+}
+
+/**
+ * Appends a high-resolution curved 3D Windmill Palm (Trachycarpus fortunei) fan frond
+ * (4x6 grid = 48 tris) with arched petiole stalk, convex pleated fan dome, and natural
+ * drooping outer leaflet tips so each frond reads as a sculptural 3D fan from every angle.
+ */
+function appendPalmFrondCard(
+  buf: CardBuildBuffer,
+  opts: {
+    origin: THREE.Vector3;
+    yaw: number;
+    pitch: number; // + droops downward, - pitches upward
+    roll: number;
+    width: number;
+    length: number;
+    archLift: number;
+    archDroop: number;
+    tipDroop: number;
+    cupDepth: number;
+    flipU: boolean;
+    aoCenter: THREE.Vector3;
+    aoRadius: number;
+    aoMin: number;
+    aoMax: number;
+    tint: THREE.Color;
+    normalTransferWeight: number;
+  }
+): void {
+  const segW = 4;
+  const segL = 6;
+
+  _euler.set(opts.pitch, opts.yaw, opts.roll, 'YXZ');
+  _quat.setFromEuler(_euler);
+  _posVec.copy(opts.origin);
+  _mat4.compose(_posVec, _quat, _scaleVec);
+  _normalMat.getNormalMatrix(_mat4);
+
+  const baseIdx = buf.vertOffset;
+
+  for (let il = 0; il <= segL; il++) {
+    const t = il / segL; // 0 = petiole base at crown shaft, ~0.38 = hastula, 1 = outer leaflet tips
+    const z = t * opts.length;
+    const bladeT = Math.max(0, t - 0.38);
+    const archY =
+      Math.sin(t * Math.PI) * opts.archLift -
+      t * t * opts.archDroop -
+      bladeT * bladeT * opts.tipDroop;
+    const dYdZ =
+      (Math.cos(t * Math.PI) * Math.PI * opts.archLift -
+        2 * t * opts.archDroop -
+        2 * bladeT * opts.tipDroop) /
+      Math.max(0.05, opts.length);
+
+    // Smoothly ramp umbrella dome camber from straight petiole into wide pleated fan blade
+    const bladeWeight = THREE.MathUtils.smoothstep(t, 0.22, 0.52);
+
+    for (let iw = 0; iw <= segW; iw++) {
+      const s = iw / segW;
+      const sn = s * 2 - 1; // -1..+1
+      const x = sn * opts.width * 0.5;
+      // Convex dome across fan width + subtle longitudinal V-ridge along central hastula
+      const cupY = bladeWeight * ((1 - sn * sn) * opts.cupDepth - Math.abs(sn) * opts.cupDepth * 0.16);
+      const dYdX =
+        (bladeWeight * (-2 * sn * opts.cupDepth - Math.sign(sn) * opts.cupDepth * 0.16)) /
+        Math.max(0.05, opts.width * 0.5);
+
+      const y = archY + cupY;
+
+      _vNorm.set(-dYdX, 1, -dYdZ).normalize().applyMatrix3(_normalMat).normalize();
+      _vPos.set(x, y, z).applyMatrix4(_mat4);
+
+      _vOut.copy(_vPos).sub(opts.aoCenter);
+      _vOut.y += opts.aoRadius * 0.45;
+      if (_vOut.lengthSq() > 1e-5) {
+        _vOut.normalize();
+      } else {
+        _vOut.set(0, 1, 0);
+      }
+      _vNorm.lerp(_vOut, opts.normalTransferWeight).normalize();
+
+      const distFrac = THREE.MathUtils.clamp(
+        _vPos.distanceTo(opts.aoCenter) / Math.max(0.35, opts.aoRadius),
+        0,
+        1.15
+      );
+      const upBias = THREE.MathUtils.clamp(
+        ((_vPos.y - opts.aoCenter.y) / Math.max(0.5, opts.aoRadius)) * 0.18 + 0.05,
+        -0.14,
+        0.16
+      );
+      const ao = THREE.MathUtils.clamp(
+        THREE.MathUtils.lerp(opts.aoMin, opts.aoMax, Math.min(1, distFrac * 0.94)) + upBias,
+        0.48,
+        1.14
+      );
+
+      const u = opts.flipU ? 1 - s : s;
+      const v = t;
+
+      buf.positions.push(_vPos.x, _vPos.y, _vPos.z);
+      buf.normals.push(_vNorm.x, _vNorm.y, _vNorm.z);
+      buf.uvs.push(u, v);
+      buf.colors.push(opts.tint.r * ao, opts.tint.g * ao, opts.tint.b * ao);
+      buf.vertOffset++;
+    }
+  }
+
+  const stride = segW + 1;
+  for (let il = 0; il < segL; il++) {
+    for (let iw = 0; iw < segW; iw++) {
+      const a = baseIdx + il * stride + iw;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      buf.indices.push(a, c, b, b, c, d);
+    }
+  }
+}
+
+/**
+ * Builds a complete batched 3D Windmill Palm (Trachycarpus fortunei) terminal rosette crown:
+ * 4 phyllotactic tiers from hanging dried tawny skirt fronds -> wide sun-bronzed lower fans
+ * -> lush radiating mid-crown windmill fans -> upright spiky young apex fans/spears.
+ */
+export function buildPalmCrownRosette(
+  ctx: TreeBotanicalContext,
+  opts: {
+    crownScale: number;
+    trunkTopRadius: number;
+    rand: () => number;
+  }
+): THREE.Group {
+  const { crownScale, trunkTopRadius, rand } = opts;
+  const group = new THREE.Group();
+  const isHigh = ctx.quality === 'high';
+
+  const liveBuf = makeBuffer();
+  const deadBuf = makeBuffer();
+  const livePalette = SPRIG_CONFIGS.windmill_palm.tintPalette;
+  const deadPalette = SPRIG_CONFIGS.windmill_palm_dead.tintPalette;
+  const aoCenter = new THREE.Vector3(0, 0.18 * crownScale, 0);
+  const aoRadius = 2.15 * crownScale;
+
+  const goldenAngle = 2.39996323;
+  let whorlIdx = 0;
+  const baseYawOffset = rand() * Math.PI * 2;
+
+  const pushPetioleRib = (
+    origin: THREE.Vector3,
+    yaw: number,
+    pitch: number,
+    length: number,
+    archLift: number,
+    archDroop: number,
+    mat: THREE.Material
+  ) => {
+    const petLen = length * 0.37;
+    if (petLen < 0.18) return;
+    _euler.set(pitch, yaw, 0, 'YXZ');
+    _quat.setFromEuler(_euler);
+    const tipLocal = new THREE.Vector3(
+      0,
+      Math.sin(0.37 * Math.PI) * archLift - 0.37 * 0.37 * archDroop,
+      petLen
+    ).applyQuaternion(_quat);
+    const end = origin.clone().add(tipLocal);
+    const rib = buildCrownScaffoldLimb(origin, end, 0.022 * crownScale, 0.011 * crownScale, mat);
+    if (rib) group.add(rib);
+  };
+
+  // Shared dried-petiole material for skirt stems
+  const deadPetioleMat = new THREE.MeshStandardMaterial({
+    color: SPRIG_CONFIGS.windmill_palm_dead.twigColor ?? '#7a6345',
+    roughness: 0.92,
+    metalness: 0.01,
+  });
+
+  // Tier 1: Clinging weathered dried dead skirt fronds tucked tight along upper fibrous collar
+  const skirtCount = isHigh ? 6 : 4;
+  for (let i = 0; i < skirtCount; i++) {
+    const yaw = baseYawOffset + whorlIdx++ * goldenAngle + (rand() - 0.5) * 0.28;
+    const yOff = (-0.54 + (i / Math.max(1, skirtCount - 1)) * 0.32) * crownScale;
+    const attachR = trunkTopRadius * 0.72;
+    const origin = new THREE.Vector3(Math.sin(yaw) * attachR, yOff, Math.cos(yaw) * attachR);
+    const len = (1.32 + rand() * 0.34) * crownScale;
+    const width = len * (0.58 + rand() * 0.12);
+    const pitch = 1.1 + rand() * 0.34; // tucked tightly downward along shaggy upper shaft (+63°..+82°)
+    const tint = new THREE.Color(deadPalette[Math.floor(rand() * deadPalette.length)]);
+
+    appendPalmFrondCard(deadBuf, {
+      origin,
+      yaw,
+      pitch,
+      roll: (rand() - 0.5) * 0.28,
+      width,
+      length: len,
+      archLift: 0.03 * crownScale,
+      archDroop: 0.24 * crownScale,
+      tipDroop: 0.36 * crownScale,
+      cupDepth: width * 0.2,
+      flipU: rand() < 0.5,
+      aoCenter,
+      aoRadius,
+      aoMin: 0.46,
+      aoMax: 0.82,
+      tint,
+      normalTransferWeight: 0.52,
+    });
+    if (isHigh && i % 2 === 0) {
+      pushPetioleRib(origin, yaw, pitch, len, 0.03 * crownScale, 0.24 * crownScale, deadPetioleMat);
+    }
+  }
+
+  // Tier 2: Older lower mature green/sun-bronzed fronds arching wide & framing the dead skirt
+  const lowerCount = isHigh ? 13 : 8;
+  for (let i = 0; i < lowerCount; i++) {
+    const yaw = baseYawOffset + whorlIdx++ * goldenAngle + (rand() - 0.5) * 0.22;
+    const yOff = (-0.24 + (i / Math.max(1, lowerCount - 1)) * 0.28) * crownScale;
+    const attachR = trunkTopRadius * 0.56;
+    const origin = new THREE.Vector3(Math.sin(yaw) * attachR, yOff, Math.cos(yaw) * attachR);
+    const len = (2.06 + rand() * 0.44) * crownScale;
+    const width = len * (0.86 + rand() * 0.14);
+    const pitch = 0.08 + rand() * 0.42; // spreading wide & gracefully bowing (+5°..+29°)
+    const tint = new THREE.Color(livePalette[Math.floor(rand() * livePalette.length)]);
+    // Subtle sun-bronzed olive warmth on oldest outer lower fans (matches reference photo!)
+    tint.lerp(new THREE.Color('#d8ce8c'), 0.14 + rand() * 0.18);
+
+    appendPalmFrondCard(liveBuf, {
+      origin,
+      yaw,
+      pitch,
+      roll: (rand() - 0.5) * 0.24,
+      width,
+      length: len,
+      archLift: 0.16 * crownScale,
+      archDroop: 0.36 * crownScale,
+      tipDroop: 0.48 * crownScale,
+      cupDepth: width * 0.15,
+      flipU: rand() < 0.5,
+      aoCenter,
+      aoRadius,
+      aoMin: 0.54,
+      aoMax: 1.02,
+      tint,
+      normalTransferWeight: 0.58,
+    });
+    if (isHigh) {
+      pushPetioleRib(origin, yaw, pitch, len, 0.16 * crownScale, 0.36 * crownScale, ctx.twigMat);
+    }
+  }
+
+  // Tier 3: Main mid-crown windmill starburst fans radiating vigorously outward & slightly upward
+  const midCount = isHigh ? 16 : 10;
+  for (let i = 0; i < midCount; i++) {
+    const yaw = baseYawOffset + whorlIdx++ * goldenAngle + (rand() - 0.5) * 0.2;
+    const yOff = (-0.04 + (i / Math.max(1, midCount - 1)) * 0.32) * crownScale;
+    const attachR = trunkTopRadius * 0.44;
+    const origin = new THREE.Vector3(Math.sin(yaw) * attachR, yOff, Math.cos(yaw) * attachR);
+    const len = (2.18 + rand() * 0.44) * crownScale;
+    const width = len * (0.88 + rand() * 0.12);
+    const pitch = -0.62 + rand() * 0.58; // lush wide starburst (-35°..-2°)
+    const tint = new THREE.Color(livePalette[Math.floor(rand() * (livePalette.length - 1))]);
+
+    appendPalmFrondCard(liveBuf, {
+      origin,
+      yaw,
+      pitch,
+      roll: (rand() - 0.5) * 0.22,
+      width,
+      length: len,
+      archLift: 0.14 * crownScale,
+      archDroop: 0.26 * crownScale,
+      tipDroop: 0.34 * crownScale,
+      cupDepth: width * 0.14,
+      flipU: rand() < 0.5,
+      aoCenter,
+      aoRadius,
+      aoMin: 0.62,
+      aoMax: 1.1,
+      tint,
+      normalTransferWeight: 0.6,
+    });
+    if (isHigh) {
+      pushPetioleRib(origin, yaw, pitch, len, 0.14 * crownScale, 0.26 * crownScale, ctx.twigMat);
+    }
+  }
+
+  // Tier 4: Upper radiant halo fans building the full rounded-oval Trachycarpus silhouette
+  const upperHaloCount = isHigh ? 11 : 7;
+  for (let i = 0; i < upperHaloCount; i++) {
+    const yaw = baseYawOffset + whorlIdx++ * goldenAngle + (rand() - 0.5) * 0.22;
+    const yOff = (0.14 + (i / Math.max(1, upperHaloCount - 1)) * 0.26) * crownScale;
+    const attachR = trunkTopRadius * 0.28;
+    const origin = new THREE.Vector3(Math.sin(yaw) * attachR, yOff, Math.cos(yaw) * attachR);
+    const len = (1.92 + rand() * 0.36) * crownScale;
+    const width = len * (0.84 + rand() * 0.12);
+    const pitch = -1.12 + rand() * 0.48; // sweeping upward (-64°..-37°)
+    const tint = new THREE.Color(livePalette[Math.floor(rand() * 3)]);
+    tint.lerp(new THREE.Color('#eef7d4'), 0.08);
+
+    appendPalmFrondCard(liveBuf, {
+      origin,
+      yaw,
+      pitch,
+      roll: (rand() - 0.5) * 0.2,
+      width,
+      length: len,
+      archLift: 0.08 * crownScale,
+      archDroop: 0.16 * crownScale,
+      tipDroop: 0.22 * crownScale,
+      cupDepth: width * 0.13,
+      flipU: rand() < 0.5,
+      aoCenter,
+      aoRadius,
+      aoMin: 0.68,
+      aoMax: 1.12,
+      tint,
+      normalTransferWeight: 0.62,
+    });
+    if (isHigh && i % 2 === 0) {
+      pushPetioleRib(origin, yaw, pitch, len, 0.08 * crownScale, 0.16 * crownScale, ctx.twigMat);
+    }
+  }
+
+  // Tier 5: Inner upright young emerald crown fans & emerging vertical starburst crest
+  const topCount = isHigh ? 7 : 5;
+  for (let i = 0; i < topCount; i++) {
+    const yaw = baseYawOffset + whorlIdx++ * goldenAngle + (rand() - 0.5) * 0.24;
+    const yOff = (0.28 + (i / Math.max(1, topCount - 1)) * 0.22) * crownScale;
+    const attachR = trunkTopRadius * 0.16;
+    const origin = new THREE.Vector3(Math.sin(yaw) * attachR, yOff, Math.cos(yaw) * attachR);
+    const len = (1.62 + rand() * 0.34) * crownScale;
+    const width = len * (0.74 + rand() * 0.12);
+    const pitch = -1.48 + rand() * 0.36; // steep upright spiky crest (-85°..-64°)
+    const tint = new THREE.Color(livePalette[Math.floor(rand() * 3)]);
+    tint.lerp(new THREE.Color('#eef7d4'), 0.16);
+
+    appendPalmFrondCard(liveBuf, {
+      origin,
+      yaw,
+      pitch,
+      roll: (rand() - 0.5) * 0.18,
+      width,
+      length: len,
+      archLift: 0.05 * crownScale,
+      archDroop: 0.1 * crownScale,
+      tipDroop: 0.15 * crownScale,
+      cupDepth: width * 0.11,
+      flipU: rand() < 0.5,
+      aoCenter,
+      aoRadius,
+      aoMin: 0.74,
+      aoMax: 1.14,
+      tint,
+      normalTransferWeight: 0.62,
+    });
+  }
+
+  if (liveBuf.vertOffset > 0) {
+    const liveMesh = new THREE.Mesh(finalizeBufferGeometry(liveBuf, true), ctx.liveMat);
+    liveMesh.customDepthMaterial = ctx.liveDepthMat;
+    liveMesh.castShadow = true;
+    liveMesh.receiveShadow = true;
+    liveMesh.userData = { isBotanicalFoliage: true };
+    group.add(liveMesh);
+  }
+
+  if (deadBuf.vertOffset > 0) {
+    const deadMesh = new THREE.Mesh(finalizeBufferGeometry(deadBuf, true), ctx.deadMat);
+    deadMesh.customDepthMaterial = ctx.deadDepthMat;
+    deadMesh.castShadow = true;
+    deadMesh.receiveShadow = true;
+    deadMesh.userData = { isBotanicalFoliage: true };
+    group.add(deadMesh);
+  }
+
+  return group;
+}
+
+/**
+ * Builds a single interactive prunable Windmill Palm frond aligned along +X (matching TreeGenerator's
+ * branchGroup coordinate frame) with a real 3D arching petiole spine and sculptural pleated 3D fan.
+ */
+export function buildSinglePalmFrond(
+  ctx: TreeBotanicalContext,
+  opts: {
+    length: number;
+    branchPitch: number; // TreeGenerator convention: + upward, - downward
+    isDeadSkirt: boolean;
+    rand: () => number;
+  }
+): THREE.Group {
+  const { length, branchPitch, isDeadSkirt, rand } = opts;
+  const group = new THREE.Group();
+  const buf = makeBuffer();
+  const palette = isDeadSkirt
+    ? SPRIG_CONFIGS.windmill_palm_dead.tintPalette
+    : SPRIG_CONFIGS.windmill_palm.tintPalette;
+  const tint = new THREE.Color(palette[Math.floor(rand() * palette.length)]);
+  const width = length * (isDeadSkirt ? 0.62 : 0.88);
+  const archLift = (isDeadSkirt ? 0.05 : 0.14) * (length / 1.8);
+  const archDroop = (isDeadSkirt ? 0.28 : 0.34) * (length / 1.8);
+  const tipDroop = (isDeadSkirt ? 0.42 : 0.40) * (length / 1.8);
+  // Convert TreeGenerator branchPitch (+up) to card pitch (+down), oriented along +X via yaw=+PI/2
+  const cardPitch = -branchPitch;
+
+  appendPalmFrondCard(buf, {
+    origin: new THREE.Vector3(0, 0, 0),
+    yaw: Math.PI / 2,
+    pitch: cardPitch,
+    roll: (rand() - 0.5) * 0.2,
+    width,
+    length,
+    archLift,
+    archDroop,
+    tipDroop,
+    cupDepth: width * (isDeadSkirt ? 0.18 : 0.15),
+    flipU: rand() < 0.5,
+    aoCenter: new THREE.Vector3(0, 0.2, 0),
+    aoRadius: Math.max(1.2, length * 1.15),
+    aoMin: isDeadSkirt ? 0.58 : 0.66,
+    aoMax: isDeadSkirt ? 0.94 : 1.08,
+    tint,
+    normalTransferWeight: 0.54,
+  });
+
+  const mat = isDeadSkirt ? ctx.deadMat : ctx.liveMat;
+  const depthMat = isDeadSkirt ? ctx.deadDepthMat : ctx.liveDepthMat;
+  const mesh = new THREE.Mesh(finalizeBufferGeometry(buf, true), mat);
+  mesh.customDepthMaterial = depthMat;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData = { isBotanicalFoliage: true };
+  group.add(mesh);
+
+  // Tapered 3D petiole spine along +X from base to hastula so frond reads solid edge-on
+  const petLen = length * 0.39;
+  const petEnd = new THREE.Vector3(
+    Math.cos(branchPitch) * petLen,
+    Math.sin(branchPitch) * petLen + Math.sin(0.39 * Math.PI) * archLift - 0.39 * 0.39 * archDroop,
+    0
+  );
+  const petMat = isDeadSkirt
+    ? new THREE.MeshStandardMaterial({
+        color: SPRIG_CONFIGS.windmill_palm_dead.twigColor ?? '#7a6345',
+        roughness: 0.92,
+        metalness: 0.01,
+      })
+    : ctx.twigMat;
+  const petMesh = buildCrownScaffoldLimb(new THREE.Vector3(0, 0, 0), petEnd, 0.028, 0.014, petMat);
+  if (petMesh) group.add(petMesh);
+
+  return group;
 }
 

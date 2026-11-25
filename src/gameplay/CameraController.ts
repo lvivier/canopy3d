@@ -157,7 +157,7 @@ export class CameraController {
         if (this.intro) this.cancelIntro(false);
         const delta = e.ctrlKey ? e.deltaY * 0.018 : Math.sign(e.deltaY) * 0.11;
         const factor = e.ctrlKey ? Math.exp(-delta) : 1 + delta;
-        this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * factor, 6.5, 52);
+        this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * factor, 6.5, 76);
       },
       { passive: false }
     );
@@ -197,9 +197,9 @@ export class CameraController {
         } else if (camKey === 'ArrowDown') {
           this.desiredPolar = THREE.MathUtils.clamp(this.desiredPolar + 0.04, 0.28, 1.46);
         } else if (camKey === 'ZoomIn') {
-          this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * 0.93, 6.5, 52);
+          this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * 0.93, 6.5, 76);
         } else if (camKey === 'ZoomOut') {
-          this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * 1.075, 6.5, 52);
+          this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance * 1.075, 6.5, 76);
         }
       }
       this.heldKeys.add(camKey);
@@ -294,7 +294,7 @@ export class CameraController {
 
       const pinchRatio = span / this.touchPinchSpan;
       if (Math.abs(pinchRatio - 1) > 0.004) {
-        this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance / pinchRatio, 6.5, 52);
+        this.desiredDistance = THREE.MathUtils.clamp(this.desiredDistance / pinchRatio, 6.5, 76);
       }
     }
 
@@ -348,7 +348,7 @@ export class CameraController {
     this.target.copy(start.target);
     this.desiredTarget.copy(start.target);
     this.distance = start.distance;
-    this.desiredDistance = THREE.MathUtils.clamp(start.distance, 6.5, 52);
+    this.desiredDistance = THREE.MathUtils.clamp(start.distance, 6.5, 76);
     this.polar = start.polar;
     this.desiredPolar = start.polar;
     this.azimuth = start.azimuth;
@@ -363,7 +363,7 @@ export class CameraController {
     if (glideToEnd) {
       const end = keyframes[keyframes.length - 1];
       this.desiredTarget.copy(end.target);
-      this.desiredDistance = THREE.MathUtils.clamp(end.distance, 6.5, 52);
+      this.desiredDistance = THREE.MathUtils.clamp(end.distance, 6.5, 76);
       this.desiredPolar = THREE.MathUtils.clamp(end.polar, 0.28, 1.46);
       const diff = Math.atan2(
         Math.sin(end.azimuth - this.azimuth),
@@ -372,7 +372,7 @@ export class CameraController {
       this.desiredAzimuth = this.azimuth + diff;
     } else {
       this.desiredTarget.copy(this.target);
-      this.desiredDistance = THREE.MathUtils.clamp(this.distance, 6.5, 52);
+      this.desiredDistance = THREE.MathUtils.clamp(this.distance, 6.5, 76);
       this.desiredPolar = THREE.MathUtils.clamp(this.polar, 0.28, 1.46);
       this.desiredAzimuth = this.azimuth;
     }
@@ -391,7 +391,7 @@ export class CameraController {
       cb?.();
     }
     this.desiredTarget.copy(point);
-    if (distance !== undefined) this.desiredDistance = THREE.MathUtils.clamp(distance, 6.5, 52);
+    if (distance !== undefined) this.desiredDistance = THREE.MathUtils.clamp(distance, 6.5, 76);
     if (polar !== undefined) this.desiredPolar = THREE.MathUtils.clamp(polar, 0.28, 1.46);
     if (azimuth !== undefined) {
       // Shortest angular path
@@ -466,7 +466,7 @@ export class CameraController {
       this.azimuth = catmullRom(k0.azimuth, k1.azimuth, k2.azimuth, k3.azimuth, localT);
 
       this.desiredTarget.copy(this.target);
-      this.desiredDistance = THREE.MathUtils.clamp(this.distance, 6.5, 52);
+      this.desiredDistance = THREE.MathUtils.clamp(this.distance, 6.5, 76);
       this.desiredPolar = this.polar;
       this.desiredAzimuth = this.azimuth;
 
@@ -476,7 +476,7 @@ export class CameraController {
         this.intro = null;
         this.target.copy(end.target);
         this.desiredTarget.copy(end.target);
-        this.distance = THREE.MathUtils.clamp(end.distance, 6.5, 52);
+        this.distance = THREE.MathUtils.clamp(end.distance, 6.5, 76);
         this.desiredDistance = this.distance;
         this.polar = THREE.MathUtils.clamp(end.polar, 0.28, 1.46);
         this.desiredPolar = this.polar;
@@ -506,14 +506,14 @@ export class CameraController {
         this.desiredDistance = THREE.MathUtils.clamp(
           this.desiredDistance * Math.exp(-zoomSpeed * dt),
           6.5,
-          52
+          76
         );
       }
       if (this.heldKeys.has('ZoomOut')) {
         this.desiredDistance = THREE.MathUtils.clamp(
           this.desiredDistance * Math.exp(zoomSpeed * dt),
           6.5,
-          52
+          76
         );
       }
     } else if (this.autoRotateSpeed !== 0 && !this.isOrbiting) {

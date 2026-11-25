@@ -376,7 +376,7 @@ export class UIManager {
               <button class="choice-btn ${this.sbSpecies === s.id ? 'active' : ''}" data-species="${s.id}">
                 <strong>${s.name}</strong>
                 <span>${s.latinName}</span>
-                <small>${s.category === 'conifer' ? 'Conifer' : 'Hardwood'}</small>
+                <small>${s.crownShape === 'palm_rosette' ? 'Palm' : s.category === 'conifer' ? 'Conifer' : 'Hardwood'}</small>
               </button>
             `
               )
@@ -893,7 +893,7 @@ export class UIManager {
       (hud.querySelector('#hud-sp-name') as HTMLElement).textContent = sp.name;
       (hud.querySelector('#hud-sp-latin') as HTMLElement).textContent = sp.latinName;
       (hud.querySelector('#hud-sp-stats') as HTMLElement).innerHTML = `
-        <span>${sp.category === 'conifer' ? 'Conifer' : 'Hardwood'}</span>
+        <span>${sp.crownShape === 'palm_rosette' ? 'Palm' : sp.category === 'conifer' ? 'Conifer' : 'Hardwood'}</span>
         <span>Saw Speed: ${sp.woodDensity < 0.85 ? 'Fast' : sp.woodDensity > 1.15 ? 'Tough' : 'Medium'}</span>
       `;
       (hud.querySelector('#hud-sp-tip') as HTMLElement).textContent = sp.arboristTip;

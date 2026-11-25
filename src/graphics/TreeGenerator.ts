@@ -17,6 +17,8 @@ import { applyBarkSurfaceShader, applyFoliageWindShader, FoliageWindUniforms } f
 import {
   buildBotanicalFoliageCluster,
   buildCrownScaffoldLimb,
+  buildPalmCrownRosette,
+  buildSinglePalmFrond,
   createTreeBotanicalContext,
   TreeBotanicalContext,
 } from './FoliageCardBuilder';
@@ -272,6 +274,79 @@ function buildArbutusPeelRibbonsGeometry(
     }
 
     for (let s = 0; s < steps; s++) {
+      const i0 = baseIdx + s * 2;
+      const i1 = i0 + 1;
+      const i2 = i0 + 2;
+      const i3 = i0 + 3;
+      indices.push(i0, i2, i1, i1, i2, i3);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Generates a single lightweight merged mesh of shaggy dark-chocolate fibrous leaf-base boots
+ * and bristly hemp-cloth tufts flaring off a Windmill Palm (Trachycarpus fortunei) trunk.
+ */
+function buildPalmFiberShagGeometry(
+  anchors: BarkPeelAnchor[],
+  rand: () => number
+): THREE.BufferGeometry | null {
+  if (anchors.length === 0) return null;
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+
+  const side = new THREE.Vector3();
+  const baseCol = new THREE.Color();
+  const tipCol = new THREE.Color();
+
+  for (const a of anchors) {
+    const baseIdx = positions.length / 3;
+    side.crossVectors(a.tangentUp, a.normal).normalize();
+    const flareOut = 0.032 + rand() * 0.058;
+    const dropDown = a.length * (0.55 + rand() * 0.45);
+    const skew = (rand() - 0.5) * a.width * 0.7;
+
+    baseCol.set(rand() > 0.4 ? '#4a3322' : '#5c412c');
+    tipCol.set(rand() > 0.5 ? '#7c5d3f' : '#947452');
+
+    const hw0 = a.width * 0.55;
+    const hw1 = a.width * 0.34;
+    const hw2 = a.width * 0.08;
+
+    // 3-row tapered shaggy triangular fiber tuft flaring outward & slightly upward or downward
+    const rows = [
+      { t: 0, hw: hw0, out: -0.008, along: 0, lat: 0 },
+      { t: 0.48, hw: hw1, out: flareOut * 0.58, along: -dropDown * 0.42 * a.curlDir, lat: skew * 0.5 },
+      { t: 1.0, hw: hw2, out: flareOut, along: -dropDown * a.curlDir, lat: skew },
+    ];
+
+    for (const r of rows) {
+      const cx =
+        a.pos.x + a.normal.x * r.out + a.tangentUp.x * r.along + side.x * r.lat;
+      const cy =
+        a.pos.y + a.normal.y * r.out + a.tangentUp.y * r.along + side.y * r.lat;
+      const cz =
+        a.pos.z + a.normal.z * r.out + a.tangentUp.z * r.along + side.z * r.lat;
+
+      const cr = THREE.MathUtils.lerp(baseCol.r, tipCol.r, r.t);
+      const cg = THREE.MathUtils.lerp(baseCol.g, tipCol.g, r.t);
+      const cb = THREE.MathUtils.lerp(baseCol.b, tipCol.b, r.t);
+
+      positions.push(cx - side.x * r.hw, cy - side.y * r.hw, cz - side.z * r.hw);
+      colors.push(cr, cg, cb);
+      positions.push(cx + side.x * r.hw, cy + side.y * r.hw, cz + side.z * r.hw);
+      colors.push(cr * 0.85, cg * 0.85, cb * 0.85);
+    }
+
+    for (let s = 0; s < 2; s++) {
       const i0 = baseIdx + s * 2;
       const i1 = i0 + 1;
       const i2 = i0 + 2;
@@ -775,6 +850,8 @@ export function buildTreeRuntime(
   const isArbutus = spec.species === 'arbutus';
   const isGarryOak = spec.species === 'garry_oak';
   const isSmokeTree = spec.species === 'smoke_tree';
+  const isWindmillPalm = spec.species === 'windmill_palm';
+  const isGiantSequoia = spec.species === 'giant_sequoia';
   const isSculpturalHardwood = isArbutus || isGarryOak;
   const rand = makeRng(spec.seed);
   const barkProfile = SPECIES_BARK_PROFILES[spec.species];
@@ -793,7 +870,7 @@ export function buildTreeRuntime(
     ? Math.max(2.6, (spec.height - cutHeight) * 0.42)
     : Math.max(4, spec.height - cutHeight);
   const trunkCircumference = 2 * Math.PI * baseRadius;
-  const repeatX = Math.max(1, Math.round(trunkCircumference / 1.35));
+  const repeatX = isWindmillPalm ? 2 : Math.max(1, Math.round(trunkCircumference / 1.35));
   const repeatY = Math.max(2, Math.round(upperHeightEst / barkProfile.metersPerTileV));
 
   const pbrBark = pbrAssets.getPbrSet(barkProfile.textureId, quality, {
@@ -865,6 +942,15 @@ export function buildTreeRuntime(
         side: THREE.DoubleSide,
       })
     : null;
+  // Lightweight shared material for 3D shaggy hemp-fiber leaf-base tufts on Windmill Palm trunks
+  const palmShagMat = isWindmillPalm
+    ? new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.96,
+        metalness: 0.01,
+        side: THREE.DoubleSide,
+      })
+    : null;
   // Weathered silver-gray coastal deadwood snag material for gnarled Pacific Madrone & Garry Oak elbows
   const arbutusSnagMat =
     isArbutus || isGarryOak
@@ -913,12 +999,12 @@ export function buildTreeRuntime(
   // 1. Stump (stays rooted in ground after felling!)
   const stumpGroup = new THREE.Group();
   const stumpGeo = buildFlutedTrunkGeometry(
-    baseRadius * (isGarryOak ? 1.22 : isArbutus ? 1.16 : 1.06),
+    baseRadius * (isGiantSequoia ? 1.18 : isGarryOak ? 1.22 : isArbutus ? 1.16 : 1.06),
     baseRadius * 0.95,
     cutHeight,
     quality === 'high' ? 36 : 24,
     5,
-    speciesSpec.buttressFlare * (isGarryOak ? 1.32 : isArbutus ? 1.24 : 1.0),
+    speciesSpec.buttressFlare * (isGiantSequoia ? 1.12 : isGarryOak ? 1.32 : isArbutus ? 1.24 : 1.0),
     0,
     0,
     false
@@ -960,13 +1046,17 @@ export function buildTreeRuntime(
   const leanX = Math.cos(spec.leanAngle) * leanDist;
   const leanZ = Math.sin(spec.leanAngle) * leanDist;
 
-  const trunkTopRadius = isGarryOak
-    ? baseRadius * 0.15
-    : isArbutus
-      ? baseRadius * 0.16
-      : speciesSpec.category === 'deciduous'
-        ? baseRadius * 0.24
-        : baseRadius * 0.08;
+  const trunkTopRadius = isWindmillPalm
+    ? baseRadius * 1.12
+    : isGiantSequoia
+      ? baseRadius * 0.34
+      : isGarryOak
+        ? baseRadius * 0.15
+        : isArbutus
+          ? baseRadius * 0.16
+          : speciesSpec.category === 'deciduous'
+            ? baseRadius * 0.24
+            : baseRadius * 0.08;
 
   // Seeded sculptural serpentine/wind-carved contortion parameters for Pacific Madrone & coastal Garry Oak
   const madroneAxis = spec.leanAngle + (rand() - 0.5) * 1.1;
@@ -1031,7 +1121,21 @@ export function buildTreeRuntime(
 
   const getTrunkRadiusAt = (localY: number): number => {
     const t = Math.max(0, Math.min(1, localY / upperHeight));
-    let r = THREE.MathUtils.lerp(baseRadius * 0.95, trunkTopRadius, isGarryOak ? Math.pow(t, 1.45) : t);
+    if (isWindmillPalm) {
+      // Iconic Trachycarpus fortunei silhouette: slender weathered lower stem widening into
+      // a thicker, shaggier fibrous crown shaft near the top (with subtle leaf-boot ring ripples)
+      const waistDip = Math.sin(Math.min(1, t * 2.1) * Math.PI) * 0.09;
+      const upperSwell = THREE.MathUtils.smoothstep(t, 0.35, 0.96) * 0.24;
+      const baseCurve = baseRadius * (0.95 - waistDip + upperSwell);
+      const collarSafe = THREE.MathUtils.smoothstep(localY, 1.0, 1.8);
+      const bootRipple = 1 + collarSafe * 0.042 * Math.sin(localY * 18.5);
+      return baseCurve * bootRipple;
+    }
+    let r = THREE.MathUtils.lerp(
+      baseRadius * 0.95,
+      trunkTopRadius,
+      isGiantSequoia ? Math.pow(t, 1.55) : isGarryOak ? Math.pow(t, 1.45) : t
+    );
     if (isArbutus || isGarryOak) {
       // Organic gnarled burl & fork swell along crooked bends (above the felling collar)
       const s = THREE.MathUtils.smoothstep(localY, 1.1, upperHeight * 0.4);
@@ -1049,10 +1153,10 @@ export function buildTreeRuntime(
     standingLocalYsAsc.length > 0 ? standingLocalYsAsc[0] : Infinity;
 
   // Pre-compute bucking cut planes so the trunk is seamlessly built from real buckable sawlog segments!
-  const buckSpacing = 4.2;
+  const buckSpacing = isGiantSequoia ? 4.8 : 4.2;
   const maxBuckDist = Math.min(
     upperHeight * 0.68,
-    16.5,
+    isGiantSequoia ? 20.5 : 16.5,
     minStandingLocalY < Infinity ? minStandingLocalY - 1.4 : Infinity
   );
   const buckCutDistances: number[] = [];
@@ -1077,8 +1181,8 @@ export function buildTreeRuntime(
 
     const radialSegs = sIdx === 0 ? (quality === 'high' ? 36 : 24) : isSculpturalHardwood ? 20 : 16;
     const segHeightSegs = Math.max(
-      isSculpturalHardwood ? 8 : 4,
-      Math.round((segLen / upperHeight) * (isSculpturalHardwood ? 30 : 16))
+      isSculpturalHardwood || isWindmillPalm ? 10 : 4,
+      Math.round((segLen / upperHeight) * (isSculpturalHardwood || isWindmillPalm ? 34 : 16))
     );
     const segGeo = new THREE.CylinderGeometry(rEnd, rStart, segLen, radialSegs, segHeightSegs, true);
     const pos = segGeo.attributes.position;
@@ -1096,6 +1200,25 @@ export function buildTreeRuntime(
         const curR = getTrunkRadiusAt(globalY);
         const ang = Math.atan2(vz, vx);
         const swell = (curR / Math.max(0.01, linR)) * (1 + (isGarryOak ? 0.065 : 0.045) * Math.sin(ang * 3 + globalY * 1.35 + madronePhaseA));
+        sx *= swell;
+        sz *= swell;
+      } else if (isWindmillPalm && globalY > 0.95) {
+        // Apply organic cylindrical swell + overlapping fibrous leaf-base ring profile
+        const linR = THREE.MathUtils.lerp(rStart, rEnd, (vy + segLen * 0.5) / Math.max(0.001, segLen));
+        const curR = getTrunkRadiusAt(globalY);
+        const ang = Math.atan2(vz, vx);
+        const lump = 1 + 0.032 * Math.sin(ang * 5 + globalY * 9.0) * THREE.MathUtils.smoothstep(globalY, 1.0, 2.2);
+        const swell = (curR / Math.max(0.01, linR)) * lump;
+        sx *= swell;
+        sz *= swell;
+      } else if (isGiantSequoia && globalY > 1.05) {
+        // Monumental vertical cathedral fluting & minimal-taper belly along Giant Sequoia bole
+        const linR = THREE.MathUtils.lerp(rStart, rEnd, (vy + segLen * 0.5) / Math.max(0.001, segLen));
+        const curR = getTrunkRadiusAt(globalY);
+        const ang = Math.atan2(vz, vx);
+        const fluteFade = THREE.MathUtils.smoothstep(globalY, 1.05, 2.4) * (1 - THREE.MathUtils.smoothstep(globalY, upperHeight * 0.25, upperHeight * 0.78));
+        const flutes = 1 + fluteFade * (0.055 * Math.cos(ang * 7) + 0.025 * Math.sin(ang * 13 + 0.8));
+        const swell = (curR / Math.max(0.01, linR)) * flutes;
         sx *= swell;
         sz *= swell;
       }
@@ -1145,6 +1268,44 @@ export function buildTreeRuntime(
         peelMesh.castShadow = false;
         peelMesh.receiveShadow = true;
         segGroup.add(peelMesh);
+      }
+    }
+
+    // Add real 3D shaggy dark-chocolate fibrous leaf-base boots & hemp fringes along Windmill Palm stem
+    if (isWindmillPalm && palmShagMat && yEnd > 1.1) {
+      const shagStart = Math.max(yStart + 0.06, 1.1);
+      const shagSpan = Math.max(0, yEnd - 0.06 - shagStart);
+      const density = quality === 'high' ? 28 : 14;
+      const shagCount = Math.round(shagSpan * density);
+      const anchors: BarkPeelAnchor[] = [];
+      for (let p = 0; p < shagCount; p++) {
+        const py = shagStart + rand() * shagSpan;
+        const heightBias = THREE.MathUtils.smoothstep(py / upperHeight, 0.15, 0.92);
+        // Denser, bushier fiber tufts higher up the crown shaft (matches real Trachycarpus!)
+        if (rand() > 0.35 + heightBias * 0.65) continue;
+        const c0 = getTrunkCenterAt(py);
+        const c1 = getTrunkCenterAt(Math.min(upperHeight, py + 0.15));
+        const tUp = c1.clone().sub(c0).normalize();
+        const rHere = getTrunkRadiusAt(py);
+        const theta = rand() * Math.PI * 2;
+        const norm = new THREE.Vector3(Math.cos(theta), 0, Math.sin(theta));
+        norm.addScaledVector(tUp, -norm.dot(tUp)).normalize();
+        const posLocal = c0.clone().sub(midCenter).addScaledVector(norm, rHere * 0.96);
+        anchors.push({
+          pos: posLocal,
+          normal: norm,
+          tangentUp: tUp,
+          width: (0.045 + rand() * 0.065) * (0.85 + heightBias * 0.4),
+          length: (0.14 + rand() * 0.18) * (0.75 + heightBias * 0.55),
+          curlDir: rand() > 0.38 ? 1 : -0.45,
+        });
+      }
+      const shagGeo = buildPalmFiberShagGeometry(anchors, rand);
+      if (shagGeo) {
+        const shagMesh = new THREE.Mesh(shagGeo, palmShagMat);
+        shagMesh.castShadow = true;
+        shagMesh.receiveShadow = true;
+        segGroup.add(shagMesh);
       }
     }
 
@@ -1330,10 +1491,12 @@ export function buildTreeRuntime(
   const branches: BranchData[] = [];
 
   const totalInteractiveBranches =
-    spec.species === 'arbutus'
-      ? Math.max(7, spec.hazardBranches + 3)
-      : spec.species === 'garry_oak'
-        ? Math.max(8, spec.hazardBranches + 4)
+    spec.species === 'windmill_palm'
+      ? Math.max(6, spec.hazardBranches + 2)
+      : spec.species === 'arbutus'
+        ? Math.max(7, spec.hazardBranches + 3)
+        : spec.species === 'garry_oak'
+          ? Math.max(8, spec.hazardBranches + 4)
         : spec.species === 'bigleaf_maple' || spec.species === 'weeping_willow'
           ? Math.max(10, spec.hazardBranches + 5)
       : spec.species === 'japanese_maple' ||
@@ -1381,10 +1544,18 @@ export function buildTreeRuntime(
       // Low multi-stemmed Smoke Tree habit: branches sprout almost directly from near the ground collar!
       const smokeBands = [0.11, 0.16, 0.22, 0.28, 0.36, 0.44, 0.54, 0.20, 0.32, 0.48];
       heightFrac = smokeBands[i % smokeBands.length] + (rand() - 0.5) * 0.04;
+    } else if (isWindmillPalm) {
+      // Windmill Palm has NO side branches on the stem — all prunable fronds ring the upper crown skirt!
+      heightFrac = (isTarget ? 0.85 : 0.90) + (i / Math.max(1, totalInteractiveBranches)) * 0.06 + (rand() - 0.5) * 0.02;
+    } else if (isGiantSequoia) {
+      // Ancient Giant Sequoias self-prune their soaring lower cathedral column before thick upper boughs emerge
+      heightFrac = 0.34 + (i / Math.max(1, totalInteractiveBranches)) * 0.36 + (rand() - 0.5) * 0.03;
     }
 
     const minAttachY = isSmokeTree ? 0.34 : spec.height < 11 ? 1.2 : 2.0;
-    const rawAttachY = Math.max(minAttachY, upperHeight * Math.min(0.76, heightFrac));
+    const rawAttachY = isWindmillPalm
+      ? Math.min(upperHeight - 0.12, upperHeight * heightFrac)
+      : Math.max(minAttachY, upperHeight * Math.min(0.76, heightFrac));
     // Keep required hazard limbs on the remaining lower spar so top-down piecing never deadlocks pruning
     const attachY =
       isTarget && minStandingLocalY < Infinity
@@ -1432,30 +1603,35 @@ export function buildTreeRuntime(
                     ? 3.1
                     : speciesSpec.category === 'deciduous'
                       ? 3.8
-                      : spec.species === 'ponderosa_pine' || spec.species === 'western_white_pine'
-                        ? 3.5
-                        : 3.2;
-    const bLength =
-      widthSpread *
-      Math.max(0.55, sizeFactor) *
-      Math.max(0.52, spec.height / 18) *
-      (isTarget ? 1.18 : isSculpturalHardwood ? 0.86 + rand() * 0.44 : 0.92 + rand() * 0.25);
+                      : spec.species === 'giant_sequoia'
+                        ? 4.6
+                        : spec.species === 'ponderosa_pine' || spec.species === 'western_white_pine'
+                          ? 3.5
+                          : 3.2;
+    const bLength = isWindmillPalm
+      ? (isTarget ? 1.62 + rand() * 0.26 : 1.78 + rand() * 0.26) * Math.max(0.84, spec.height / 9.2)
+      : widthSpread *
+        Math.max(0.55, sizeFactor) *
+        Math.max(0.52, spec.height / 18) *
+        (isTarget ? 1.18 : isSculpturalHardwood ? 0.86 + rand() * 0.44 : 0.92 + rand() * 0.25);
 
-    const bRadius = Math.max(
-      0.065,
-      localTrunkR *
-        (isGarryOak
-          ? isTarget
-            ? 0.52
-            : 0.48 + rand() * 0.16
-          : isArbutus
-            ? isTarget
-              ? 0.46
-              : 0.44 + rand() * 0.14
-            : isTarget
-              ? 0.42
-              : 0.34)
-    );
+    const bRadius = isWindmillPalm
+      ? 0.046
+      : Math.max(
+          0.065,
+          localTrunkR *
+            (isGarryOak
+              ? isTarget
+                ? 0.52
+                : 0.48 + rand() * 0.16
+              : isArbutus
+                ? isTarget
+                  ? 0.46
+                  : 0.44 + rand() * 0.14
+                : isTarget
+                  ? 0.42
+                  : 0.34)
+        );
 
     const branchGroup = new THREE.Group();
     const attachLocalPos = new THREE.Vector3(
@@ -1488,14 +1664,17 @@ export function buildTreeRuntime(
     else if (spec.species === 'trembling_aspen') pitch = 0.46 + rand() * 0.2;
     else if (spec.species === 'eucalyptus') pitch = 0.38 + rand() * 0.22;
     else if (spec.species === 'california_redwood') pitch = -0.1;
+    else if (spec.species === 'giant_sequoia') pitch = -0.06 + rand() * 0.14;
     else if (spec.species === 'ponderosa_pine') pitch = 0.08 + rand() * 0.14;
     else if (spec.species === 'western_larch') pitch = -0.06 + rand() * 0.1;
     else if (spec.species === 'blue_spruce') pitch = -0.08;
     else if (spec.species === 'western_white_pine') pitch = 0.04 + rand() * 0.08;
     else if (spec.species === 'douglas_fir') pitch = 0.04 + (heightFrac - 0.18) * 0.36;
+    else if (spec.species === 'windmill_palm')
+      pitch = isTarget ? -0.98 - rand() * 0.28 : -0.18 - rand() * 0.24;
     else pitch = -0.06 + (heightFrac - 0.2) * 0.25;
 
-    if (isTarget && spec.task === 'prune_only') {
+    if (isTarget && spec.task === 'prune_only' && !isWindmillPalm) {
       pitch -= 0.14; // overhanging / drooping hazard feel
     }
 
@@ -1513,7 +1692,16 @@ export function buildTreeRuntime(
     const branchOutHint = new THREE.Vector3(1, 0, 0);
     const branchHFrac = THREE.MathUtils.clamp((attachY / Math.max(1, upperHeight) - 0.15) / 0.8, 0, 0.72);
 
-    if (isArbutus) {
+    if (isWindmillPalm && botanicalCtx) {
+      // Single authentic arching palm frond (dried tawny skirt frond for targets, lower live fan otherwise)
+      const frondGroup = buildSinglePalmFrond(botanicalCtx, {
+        length: bLength,
+        branchPitch: pitch,
+        isDeadSkirt: isTarget,
+        rand,
+      });
+      branchGroup.add(frondGroup);
+    } else if (isArbutus) {
       // Sculptural contorted Pacific Madrone serpentine 3D spline limb (dips, elbows sideways, hooks skyward!)
       const zSign = rand() > 0.5 ? 1 : -1;
       const yaw1 = zSign * bLength * (0.18 + rand() * 0.22);
@@ -1740,8 +1928,10 @@ export function buildTreeRuntime(
       const seg2Pitch =
         spec.species === 'western_red_cedar'
           ? pitch + 0.34
-          : spec.species === 'douglas_fir'
-            ? pitch + 0.22
+          : spec.species === 'giant_sequoia'
+            ? pitch + 0.32
+            : spec.species === 'douglas_fir'
+              ? pitch + 0.22
             : spec.species === 'weeping_willow'
               ? pitch - 0.55
               : spec.species === 'japanese_maple'
@@ -1856,7 +2046,7 @@ export function buildTreeRuntime(
       colliderGeo,
       new THREE.MeshBasicMaterial({ visible: false })
     );
-    colliderMesh.rotation.z = pitch * 0.7;
+    colliderMesh.rotation.z = isWindmillPalm ? pitch * 0.88 : pitch * 0.7;
     const branchId = `${spec.id}-b-${i}`;
     colliderMesh.userData = { treeId: spec.id, branchId, part: 'branch' };
     branchGroup.add(colliderMesh);
@@ -1893,8 +2083,8 @@ export function buildTreeRuntime(
   let crownLimbIdx = 0;
 
   if (speciesSpec.category === 'conifer') {
-    const tiers = Math.floor(spec.height * 0.65);
-    const startFrac = 0.52;
+    const tiers = isGiantSequoia ? Math.floor(spec.height * 0.56) : Math.floor(spec.height * 0.65);
+    const startFrac = isGiantSequoia ? 0.45 : 0.52;
     const crownStartY = upperHeight * startFrac;
     const crownZoneSpan = Math.max(0.1, groundLimbCutoffY - crownStartY);
     // Group all crown foliage overlapping the sawlog bucking zone into 4 cohesive
@@ -1925,8 +2115,10 @@ export function buildTreeRuntime(
       const y = upperHeight * f;
       const center = getTrunkCenterAt(y);
       const crownWidth = spec.species === 'california_redwood' ? 0.205 : 0.24;
-      const crownRadius = (1 - (f - 0.15) / 0.88) * (spec.height * crownWidth) + 0.55;
-      const boughsInTier = f > 0.88 ? 3 : 5;
+      const crownRadius = isGiantSequoia
+        ? spec.height * 0.172 * (0.58 + 0.46 * Math.sin(crownT * Math.PI * 0.86 + 0.16)) + 1.15
+        : (1 - (f - 0.15) / 0.88) * (spec.height * crownWidth) + 0.55;
+      const boughsInTier = isGiantSequoia ? (f > 0.9 ? 4 : 5) : f > 0.88 ? 3 : 5;
 
       // Species-accurate conifer upper bough vertical sweep!
       const boughVertLift = (reach: number) =>
@@ -1940,15 +2132,17 @@ export function buildTreeRuntime(
                 ? reach * THREE.MathUtils.lerp(-0.22, -0.02, crownT)
                 : spec.species === 'california_redwood'
                   ? reach * THREE.MathUtils.lerp(-0.08, 0.16, crownT)
-                  : spec.species === 'ponderosa_pine'
-                    ? reach * THREE.MathUtils.lerp(0.08, 0.36, crownT)
-                    : spec.species === 'blue_spruce'
-                      ? reach * THREE.MathUtils.lerp(0.02, 0.32, crownT)
-                      : spec.species === 'western_larch'
-                        ? reach * THREE.MathUtils.lerp(-0.08, 0.2, crownT)
-                        : spec.species === 'western_white_pine'
-                          ? reach * THREE.MathUtils.lerp(-0.02, 0.22, crownT)
-                          : -0.1;
+                  : spec.species === 'giant_sequoia'
+                    ? reach * THREE.MathUtils.lerp(-0.04, 0.28, crownT)
+                    : spec.species === 'ponderosa_pine'
+                      ? reach * THREE.MathUtils.lerp(0.08, 0.36, crownT)
+                      : spec.species === 'blue_spruce'
+                        ? reach * THREE.MathUtils.lerp(0.02, 0.32, crownT)
+                        : spec.species === 'western_larch'
+                          ? reach * THREE.MathUtils.lerp(-0.08, 0.2, crownT)
+                          : spec.species === 'western_white_pine'
+                            ? reach * THREE.MathUtils.lerp(-0.02, 0.22, crownT)
+                            : -0.1;
 
       if (y <= groundLimbCutoffY) {
         const band = y - crownStartY < crownZoneSpan * 0.5 ? 0 : 1;
@@ -1962,7 +2156,7 @@ export function buildTreeRuntime(
           );
           const pad = createFoliageCluster(
             speciesSpec,
-            Math.max(0.7, reach * 0.52),
+            Math.max(0.7, reach * (isGiantSequoia ? 0.58 : 0.52)),
             rand,
             false,
             botanicalCtx,
@@ -1977,8 +2171,8 @@ export function buildTreeRuntime(
             const limb = buildCrownScaffoldLimb(
               boughStart,
               padPos,
-              Math.max(0.055, reach * 0.032),
-              0.018,
+              Math.max(isGiantSequoia ? 0.12 : 0.055, reach * (isGiantSequoia ? 0.048 : 0.032)),
+              isGiantSequoia ? 0.038 : 0.018,
               botanicalCtx.twigMat
             );
             if (limb) bucket.group.add(limb);
@@ -2000,7 +2194,7 @@ export function buildTreeRuntime(
           );
           const pad = createFoliageCluster(
             speciesSpec,
-            Math.max(0.7, reach * 0.52),
+            Math.max(0.7, reach * (isGiantSequoia ? 0.58 : 0.52)),
             rand,
             false,
             botanicalCtx,
@@ -2017,8 +2211,8 @@ export function buildTreeRuntime(
             const limb = buildCrownScaffoldLimb(
               boughStart,
               padLocal,
-              Math.max(0.045, reach * 0.028),
-              0.016,
+              Math.max(isGiantSequoia ? 0.1 : 0.045, reach * (isGiantSequoia ? 0.044 : 0.028)),
+              isGiantSequoia ? 0.032 : 0.016,
               botanicalCtx.twigMat
             );
             if (limb) tierSeg.group.add(limb);
@@ -2085,15 +2279,40 @@ export function buildTreeRuntime(
         pruned: false,
       });
     }
-    // Leader crown cap
+    // Leader crown cap (ancient rounded monarch dome for Giant Sequoia vs pointed spire for other conifers)
     const topCenter = getTrunkCenterAt(upperHeight);
-    const spire = createFoliageCluster(speciesSpec, 1.05, rand, false, botanicalCtx, undefined, 1.0);
-    spire.position.set(
-      topCenter.x + (speciesSpec.droopingLeader ? 0.95 : 0),
-      upperHeight - 0.15,
-      topCenter.z
-    );
-    upperCrownGroup.add(spire);
+    if (isGiantSequoia) {
+      const domeCapOffsets = [
+        { dx: 0, dy: 0.6, dz: 0, s: 2.65 },
+        { dx: 1.8, dy: 0.05, dz: 0.4, s: 2.25 },
+        { dx: -1.6, dy: 0.12, dz: 0.9, s: 2.2 },
+        { dx: 0.5, dy: -0.08, dz: -1.75, s: 2.15 },
+        { dx: -1.1, dy: -0.12, dz: -1.35, s: 2.1 },
+        { dx: 1.25, dy: 0.18, dz: 1.35, s: 2.1 },
+      ];
+      for (const cap of domeCapOffsets) {
+        const outDir = new THREE.Vector3(cap.dx, 0.4, cap.dz).normalize();
+        const capCluster = createFoliageCluster(
+          speciesSpec,
+          cap.s,
+          rand,
+          false,
+          botanicalCtx,
+          outDir,
+          1.0
+        );
+        capCluster.position.set(topCenter.x + cap.dx, upperHeight + cap.dy, topCenter.z + cap.dz);
+        upperCrownGroup.add(capCluster);
+      }
+    } else {
+      const spire = createFoliageCluster(speciesSpec, 1.05, rand, false, botanicalCtx, undefined, 1.0);
+      spire.position.set(
+        topCenter.x + (speciesSpec.droopingLeader ? 0.95 : 0),
+        upperHeight - 0.15,
+        topCenter.z
+      );
+      upperCrownGroup.add(spire);
+    }
   } else if (isArbutus) {
     // Sculptural multi-stem Pacific Madrone crown:
     // Thick, contorted co-dominant serpentine boughs forking asymmetrically with open negative space,
@@ -2726,6 +2945,36 @@ export function buildTreeRuntime(
       boughGroup.position.sub(upperSeg.group.position);
       upperSeg.group.add(boughGroup);
     }
+  } else if (isWindmillPalm) {
+    // Windmill Palm (Trachycarpus fortunei): solitary shaggy trunk topped with a radiating starburst
+    // rosette of ~40 sculptural 3D pleated fan fronds + hanging tawny dead skirt fronds!
+    const apexPos = getTrunkCenterAt(upperHeight);
+    const apexR = getTrunkRadiusAt(upperHeight);
+    const crownScale = Math.max(0.84, spec.height / 9.2);
+    const palmCrownGroup = new THREE.Group();
+    palmCrownGroup.position.copy(apexPos);
+
+    // Fibrous dark-chocolate crown heart bud tucked cleanly inside the radiating petioles
+    const budGeo = new THREE.SphereGeometry(apexR * 0.88, 16, 12);
+    budGeo.scale(1.0, 0.82, 1.0);
+    const budMesh = new THREE.Mesh(budGeo, barkMat);
+    budMesh.position.y = -0.18;
+    budMesh.castShadow = true;
+    budMesh.receiveShadow = true;
+    palmCrownGroup.add(budMesh);
+
+    if (botanicalCtx) {
+      const rosette = buildPalmCrownRosette(botanicalCtx, {
+        crownScale,
+        trunkTopRadius: apexR,
+        rand,
+      });
+      palmCrownGroup.add(rosette);
+    }
+
+    const topSeg = findSegmentForY(upperHeight);
+    palmCrownGroup.position.sub(topSeg.group.position);
+    topSeg.group.add(palmCrownGroup);
   } else {
     // Deciduous upper dome (tuned for wild hardwoods + ornamental garden trees + coastal broadleafs)
     const domeCenter = getTrunkCenterAt(

@@ -298,12 +298,13 @@ class TextureCache {
         ctx.ellipse(x, y, r, r * 0.75, rand() * Math.PI, 0, Math.PI * 2);
         ctx.fill();
       }
-    } else if (spec.barkStyle === 'redwood_fluted') {
-      // California Redwood: thick, deeply fluted spongy cinnamon-crimson ridges
-      for (let i = 0; i < 115; i++) {
+    } else if (spec.barkStyle === 'redwood_fluted' || spec.barkStyle === 'sequoia_fluted') {
+      // California Redwood / Giant Sequoia: thick, deeply fluted spongy cinnamon-terracotta ridges
+      const isSeq = spec.barkStyle === 'sequoia_fluted';
+      for (let i = 0; i < (isSeq ? 95 : 115); i++) {
         const x = rand() * size;
-        const w = 6 + rand() * 14;
-        ctx.strokeStyle = rand() > 0.45 ? spec.barkSecondary : '#3a120b';
+        const w = (isSeq ? 10 : 6) + rand() * (isSeq ? 20 : 14);
+        ctx.strokeStyle = rand() > 0.45 ? spec.barkSecondary : isSeq ? '#4f1b0a' : '#3a120b';
         ctx.lineWidth = w;
         ctx.beginPath();
         let cx = x;
@@ -321,11 +322,17 @@ class TextureCache {
         bctx.lineTo(cx, size);
         bctx.stroke();
       }
-      // Rich fibrous rust-red highlight ribs
+      // Rich fibrous rust-red / cinnamon-orange highlight ribs
       for (let i = 0; i < 160; i++) {
         const x = rand() * size;
-        const w = 3 + rand() * 7;
-        ctx.fillStyle = rand() > 0.5 ? 'rgba(164, 72, 46, 0.38)' : 'rgba(132, 52, 34, 0.32)';
+        const w = (isSeq ? 5 : 3) + rand() * (isSeq ? 11 : 7);
+        ctx.fillStyle = isSeq
+          ? rand() > 0.5
+            ? 'rgba(210, 102, 52, 0.42)'
+            : 'rgba(178, 76, 36, 0.36)'
+          : rand() > 0.5
+            ? 'rgba(164, 72, 46, 0.38)'
+            : 'rgba(132, 52, 34, 0.32)';
         ctx.fillRect(x, 0, w, size);
         bctx.fillStyle = 'rgba(235, 235, 235, 0.35)';
         bctx.fillRect(x, 0, w, size);
@@ -489,6 +496,32 @@ class TextureCache {
         bctx.beginPath();
         bctx.ellipse(x, y, w * 0.55, h, 0, 0, Math.PI * 2);
         bctx.fill();
+      }
+    } else if (spec.barkStyle === 'palm_fibrous') {
+      // Windmill Palm: dense criss-crossing dark chocolate hemp fibers & overlapping leaf-base boots
+      for (let i = 0; i < 420; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const len = 36 + rand() * 84;
+        const diag = (rand() > 0.5 ? 1 : -1) * (0.45 + rand() * 0.55);
+        ctx.strokeStyle =
+          rand() > 0.68
+            ? 'rgba(116, 86, 56, 0.52)'
+            : rand() > 0.35
+              ? 'rgba(62, 42, 27, 0.78)'
+              : 'rgba(28, 18, 11, 0.86)';
+        ctx.lineWidth = 1.5 + rand() * 3.0;
+        ctx.beginPath();
+        ctx.moveTo(x - len * 0.5, y - len * diag * 0.35);
+        ctx.lineTo(x + len * 0.5, y + len * diag * 0.35);
+        ctx.stroke();
+
+        bctx.strokeStyle = rand() > 0.45 ? '#c6c6c6' : '#323232';
+        bctx.lineWidth = 2.0;
+        bctx.beginPath();
+        bctx.moveTo(x - len * 0.5, y - len * diag * 0.35);
+        bctx.lineTo(x + len * 0.5, y + len * diag * 0.35);
+        bctx.stroke();
       }
     } else {
       // Western Hemlock: russet-brown flat plates & narrow dark grooves

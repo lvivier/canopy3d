@@ -324,6 +324,29 @@ export const PNW_SPECIES: Record<SpeciesId, SpeciesSpec> = {
     crownShape: 'redwood_spire',
   },
 
+  giant_sequoia: {
+    id: 'giant_sequoia',
+    name: 'Giant Sequoia',
+    latinName: 'Sequoiadendron giganteum',
+    category: 'conifer',
+    description:
+      'Most massive single-stem tree on Earth, rising from sunlit mountain ridges with a monumental deeply fluted cinnamon-orange trunk, silvery blue-green scale foliage, and an ancient rounded monarch crown.',
+    arboristTip:
+      'Immense diameter and thick spongy bark require patient felling cuts; clear high overhanging boughs first and give this towering titan a wide, clean corridor.',
+    barkPrimary: '#b24b24',
+    barkSecondary: '#5e210e',
+    barkStyle: 'sequoia_fluted',
+    heartwoodColor: '#a83c26',
+    sapwoodColor: '#ebd4ba',
+    foliageColors: ['#3d6452', '#4c7862', '#2e5042', '#648f78'],
+    woodDensity: 0.92,
+    timberValuePerMeter: 96,
+    heightRange: [30, 40],
+    radiusRatio: 0.044,
+    buttressFlare: 1.78,
+    crownShape: 'sequoia_monarch',
+  },
+
   rhododendron: {
     id: 'rhododendron',
     name: 'Rhododendron',
@@ -506,6 +529,29 @@ export const PNW_SPECIES: Record<SpeciesId, SpeciesSpec> = {
     radiusRatio: 0.021,
     buttressFlare: 1.12,
     crownShape: 'aspen_shimmer',
+  },
+
+  windmill_palm: {
+    id: 'windmill_palm',
+    name: 'Windmill Palm',
+    latinName: 'Trachycarpus fortunei',
+    category: 'deciduous',
+    description:
+      'Cold-hardy ornamental fan palm beloved across coastal BC and Pacific Northwest towns, prized for its shaggy hemp-fiber trunk, dried skirt fronds, and starburst crown of deeply split pleated fans.',
+    arboristTip:
+      'Fibrous monocot trunk lacks true growth rings—expect tough stringy cutting and clean dead lower skirt fronds close to the collar without slicing the living crown shaft.',
+    barkPrimary: '#3f2c1f',
+    barkSecondary: '#251911',
+    barkStyle: 'palm_fibrous',
+    heartwoodColor: '#c9b18a',
+    sapwoodColor: '#e5d4b4',
+    foliageColors: ['#3b6324', '#4e7a2e', '#2d501b', '#7b8c32', '#9b7b4b'],
+    woodDensity: 0.88,
+    timberValuePerMeter: 26,
+    heightRange: [6.5, 11.5],
+    radiusRatio: 0.031,
+    buttressFlare: 1.15,
+    crownShape: 'palm_rosette',
   },
 };
 

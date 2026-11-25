@@ -28,6 +28,7 @@ const SPRIGS = [
   { id: 'sitka_spruce', src: 'sprig-sitka-spruce.jpg', key: 'magenta', normalStrength: 1.85 },
   { id: 'western_hemlock', src: 'sprig-western-hemlock.jpg', key: 'magenta', normalStrength: 1.5 },
   { id: 'california_redwood', src: 'sprig-california-redwood.jpg', key: 'magenta', normalStrength: 1.75 },
+  { id: 'giant_sequoia', src: 'sprig-giant-sequoia.jpg', key: 'magenta', normalStrength: 1.65 },
   // Group 2 — Interior & Alpine Conifers
   { id: 'ponderosa_pine', src: 'sprig-ponderosa-pine.jpg', key: 'magenta', normalStrength: 1.7 },
   { id: 'western_larch', src: 'sprig-western-larch.jpg', key: 'cyan', normalStrength: 1.45 },
@@ -51,6 +52,8 @@ const SPRIGS = [
   { id: 'smoke_tree_leaves', src: 'sprig-smoke-tree-leaves.jpg', key: 'cyan', normalStrength: 1.35 },
   { id: 'rhododendron', src: 'sprig-rhododendron.jpg', key: 'cyan', normalStrength: 1.55 },
   { id: 'rhododendron_leaves', src: 'sprig-rhododendron-leaves.jpg', key: 'cyan', normalStrength: 1.5 },
+  { id: 'windmill_palm', src: 'sprig-windmill-palm.jpg', key: 'magenta', normalStrength: 1.75 },
+  { id: 'windmill_palm_dead', src: 'sprig-windmill-palm-dead.jpg', key: 'cyan', normalStrength: 1.85 },
   // Ground Cover Undergrowth & Wildflowers
   { id: 'ground_sword_fern', src: 'ground-sword-fern.jpg', key: 'cyan', normalStrength: 1.55 },
   { id: 'ground_salal', src: 'ground-salal.jpg', key: 'cyan', normalStrength: 1.5 },

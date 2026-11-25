@@ -1089,8 +1089,10 @@ export class AudioEngine {
     const isStringy =
       id === 'western_red_cedar' ||
       id === 'california_redwood' ||
+      id === 'giant_sequoia' ||
       id === 'eucalyptus' ||
-      id === 'western_hemlock';
+      id === 'western_hemlock' ||
+      id === 'windmill_palm';
     const isBrittlePop =
       id === 'trembling_aspen' ||
       id === 'white_poplar' ||
@@ -1103,7 +1105,11 @@ export class AudioEngine {
       id === 'japanese_maple' ||
       id === 'chokecherry' ||
       id === 'lilac';
-    const isGiant = id === 'california_redwood' || id === 'douglas_fir' || id === 'western_larch';
+    const isGiant =
+      id === 'giant_sequoia' ||
+      id === 'california_redwood' ||
+      id === 'douglas_fir' ||
+      id === 'western_larch';
 
     const woodPitch = isGiant
       ? 0.78
@@ -1138,18 +1144,22 @@ export class AudioEngine {
     const foliageBrightness =
       id === 'trembling_aspen' || id === 'white_poplar' || id === 'weeping_willow'
         ? 1.35
-        : id === 'western_larch'
-          ? 1.18
-          : isConifer
-            ? 0.92
-            : 1.08;
+        : id === 'windmill_palm'
+          ? 1.24
+          : id === 'western_larch'
+            ? 1.18
+            : isConifer
+              ? 0.92
+              : 1.08;
 
     const leafFlutter =
       id === 'trembling_aspen' || id === 'white_poplar'
         ? 1.0
-        : isConifer
-          ? 0.25
-          : 0.78;
+        : id === 'windmill_palm'
+          ? 0.88
+          : isConifer
+            ? 0.25
+            : 0.78;
 
     const massFactor = Math.max(0.7, Math.min(1.45, 0.65 + density * 0.45));
 

@@ -33,6 +33,8 @@ const CUSTOM_TILES = [
   { id: 'arbutus_bark', src: 'arbutus-bark.jpg', mode: 'peeling_arbutus', seamless: true },
   { id: 'ponderosa_pine_bark', src: 'ponderosa-pine-bark.jpg', mode: 'fissured_bark', seamless: true },
   { id: 'aspen_bark', src: 'aspen-bark.jpg', mode: 'aspen_eye', seamless: true },
+  { id: 'windmill_palm_bark', src: 'windmill-palm-bark.jpg', mode: 'fissured_bark', seamless: true, brighten: 1.62 },
+  { id: 'giant_sequoia_bark', src: 'giant-sequoia-bark.jpg', mode: 'fissured_bark', seamless: true },
   { id: 'sawn_end_grain', src: 'sawn-end-grain.jpg', mode: 'end_grain', seamless: false },
 ];
 
@@ -337,6 +339,11 @@ async function processCustomTiles() {
       rgb = makeSeamlessRGB(rgb, info.width, info.height);
     }
     const delighted = delightRGB(rgb, info.width, info.height, tile.seamless, tile.mode === 'end_grain' ? 0.3 : 0.48);
+    if (tile.brighten && tile.brighten !== 1) {
+      for (let i = 0; i < delighted.length; i++) {
+        delighted[i] = Math.min(255, Math.round(delighted[i] * tile.brighten));
+      }
+    }
     const { nor, arm } = extractPBR(delighted, info.width, info.height, tile.mode, tile.seamless);
 
     const diffWebp = path.join(outDir, 'diff.webp');
