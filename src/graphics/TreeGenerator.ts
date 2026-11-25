@@ -3106,6 +3106,7 @@ export function buildTreeRuntime(
     limbedCount: 0,
     buckedCount: 0,
     totalBuckCuts: buckRings.length,
+    buckedOutOfOrder: false,
     completed: false,
     occlusionFade: 1,
     occlusionMaterials,

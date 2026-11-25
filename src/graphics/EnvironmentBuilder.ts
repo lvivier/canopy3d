@@ -1666,6 +1666,8 @@ export function buildEnvironment(
   };
   const [skyCol, groundCol, hemiInt] = hemiColors[contract.weather];
   const hemiLight = new THREE.HemisphereLight(skyCol, groundCol, hemiInt * hemiScale);
+  // Layer 1 lights the saw and cut guide when they are redrawn after the trunk-cut blur.
+  hemiLight.layers.enable(1);
   group.add(hemiLight);
 
   const sunColors: Record<WeatherId, [number, number]> = {
@@ -1677,6 +1679,7 @@ export function buildEnvironment(
   };
   const [sunCol, sunInt] = sunColors[contract.weather];
   const sunLight = new THREE.DirectionalLight(sunCol, sunInt);
+  sunLight.layers.enable(1);
   sunLight.position.copy(sunDir).multiplyScalar(68);
   sunLight.castShadow = true;
   const shadowRes = quality === 'high' ? 4096 : 2048;
@@ -1698,6 +1701,7 @@ export function buildEnvironment(
     contract.weather === 'light_rain' ? 0x99b8c6 : 0xaad0e6,
     (contract.weather === 'light_rain' ? 0.64 : 0.52) * (quality === 'high' ? 0.8 : 1.0)
   );
+  fillLight.layers.enable(1);
   fillLight.position.copy(sunDir).multiplyScalar(-45);
   fillLight.position.y = 26;
   group.add(fillLight);

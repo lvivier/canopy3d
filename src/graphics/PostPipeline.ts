@@ -311,9 +311,270 @@ class CanopyAtmospherePass extends Pass {
   }
 }
 
+const COC_GLSL = /* glsl */ `
+  uniform sampler2D tDepth;
+  uniform float uFocus;
+  uniform float uSharp;
+  uniform float uFalloff;
+  uniform float uNear;
+  uniform float uFar;
+
+  float cocAt(vec2 uv) {
+    float depth = texture2D(tDepth, uv).x;
+    float viewZ = (uNear * uFar) / ((uFar - uNear) * depth - uFar);
+    float dist = -viewZ;
+    return smoothstep(uSharp, uSharp + uFalloff, dist - uFocus);
+  }
+`;
+
+/**
+ * A quiet background soften for the close trunk cut. The kerf stays sharp.
+ * Farther scenery only loses a little detail, enough to narrow attention
+ * without reading as a lens or a sparkle.
+ */
+class CutFocusPass extends Pass {
+  strength = 0;
+  focusDistance = 8;
+
+  private readonly scene: THREE.Scene;
+  private readonly camera: THREE.Camera;
+  private readonly shared = {
+    tDepth: { value: null as THREE.Texture | null },
+    uFocus: { value: 8 },
+    uSharp: { value: 0.9 },
+    uFalloff: { value: 9 },
+    uNear: { value: 0.25 },
+    uFar: { value: 400 },
+    uStrength: { value: 0 },
+  };
+
+  private readonly halfA: THREE.WebGLRenderTarget;
+  private readonly halfB: THREE.WebGLRenderTarget;
+  private readonly downsampleMaterial: THREE.ShaderMaterial;
+  private readonly gaussianMaterial: THREE.ShaderMaterial;
+  private readonly compositeMaterial: THREE.ShaderMaterial;
+  private readonly copyMaterial: THREE.ShaderMaterial;
+  private readonly fsQuad: FullScreenQuad;
+
+  constructor(scene: THREE.Scene, camera: THREE.Camera) {
+    super();
+    this.scene = scene;
+    this.camera = camera;
+    this.enabled = false;
+    this.needsSwap = true;
+
+    const rtOpts: THREE.RenderTargetOptions = {
+      type: THREE.HalfFloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+      magFilter: THREE.LinearFilter,
+      minFilter: THREE.LinearFilter,
+    };
+    this.halfA = new THREE.WebGLRenderTarget(1, 1, rtOpts);
+    this.halfB = new THREE.WebGLRenderTarget(1, 1, rtOpts);
+
+    const cocUniforms = {
+      tDepth: this.shared.tDepth,
+      uFocus: this.shared.uFocus,
+      uSharp: this.shared.uSharp,
+      uFalloff: this.shared.uFalloff,
+      uNear: this.shared.uNear,
+      uFar: this.shared.uFar,
+      uStrength: this.shared.uStrength,
+    };
+
+    this.downsampleMaterial = new THREE.ShaderMaterial({
+      uniforms: { tDiffuse: { value: null }, ...cocUniforms },
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D tDiffuse;
+        uniform float uStrength;
+        varying vec2 vUv;
+        ${COC_GLSL}
+        void main() {
+          float coc = cocAt(vUv) * uStrength;
+          vec3 color = texture2D(tDiffuse, vUv).rgb;
+          gl_FragColor = vec4(color * coc, coc);
+        }
+      `,
+    });
+
+    // Separable gaussian. Equal weights on both axes, so bright gaps stay
+    // soft smudges instead of four-point stars.
+    this.gaussianMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        tInput: { value: null },
+        uDirection: { value: new THREE.Vector2(1, 0) },
+      },
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D tInput;
+        uniform vec2 uDirection;
+        varying vec2 vUv;
+        void main() {
+          vec4 c = texture2D(tInput, vUv) * 0.266346;
+          c += texture2D(tInput, vUv + uDirection) * 0.213388;
+          c += texture2D(tInput, vUv - uDirection) * 0.213388;
+          c += texture2D(tInput, vUv + uDirection * 2.0) * 0.109428;
+          c += texture2D(tInput, vUv - uDirection * 2.0) * 0.109428;
+          c += texture2D(tInput, vUv + uDirection * 3.0) * 0.044098;
+          c += texture2D(tInput, vUv - uDirection * 3.0) * 0.044098;
+          gl_FragColor = c;
+        }
+      `,
+    });
+
+    this.compositeMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        tSharp: { value: null },
+        tBlur: { value: null },
+        ...cocUniforms,
+      },
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D tSharp;
+        uniform sampler2D tBlur;
+        uniform float uStrength;
+        varying vec2 vUv;
+        ${COC_GLSL}
+        ${SANITIZE_GLSL}
+        void main() {
+          float coc = cocAt(vUv) * uStrength;
+          vec3 sharp = texture2D(tSharp, vUv).rgb;
+          vec4 blurred = texture2D(tBlur, vUv);
+          vec3 soft = blurred.a > 0.02 ? blurred.rgb / blurred.a : sharp;
+          float coverage = smoothstep(0.04, 0.3, blurred.a);
+          // A partial mix: the yard stays readable, just no longer competing.
+          float w = smoothstep(0.06, 0.8, coc) * coverage * 0.58;
+          gl_FragColor = vec4(sanitizeHdr(mix(sharp, soft, w)), 1.0);
+        }
+      `,
+    });
+
+    this.copyMaterial = new THREE.ShaderMaterial({
+      uniforms: { tDiffuse: { value: null } },
+      depthTest: false,
+      depthWrite: false,
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: /* glsl */ `
+        uniform sampler2D tDiffuse;
+        varying vec2 vUv;
+        void main() {
+          gl_FragColor = texture2D(tDiffuse, vUv);
+        }
+      `,
+    });
+
+    this.fsQuad = new FullScreenQuad(this.compositeMaterial);
+  }
+
+  public override setSize(width: number, height: number): void {
+    const w = Math.max(1, Math.floor(width / 2));
+    const h = Math.max(1, Math.floor(height / 2));
+    this.halfA.setSize(w, h);
+    this.halfB.setSize(w, h);
+  }
+
+  public override render(
+    renderer: THREE.WebGLRenderer,
+    writeBuffer: THREE.WebGLRenderTarget,
+    readBuffer: THREE.WebGLRenderTarget
+  ): void {
+    const output = this.renderToScreen ? null : writeBuffer;
+    const depth = readBuffer.depthTexture;
+    if (!depth) {
+      this.copyMaterial.uniforms.tDiffuse.value = readBuffer.texture;
+      this.blit(renderer, this.copyMaterial, output);
+      this.drawOverlays(renderer, output);
+      return;
+    }
+
+    const lens = this.camera as THREE.PerspectiveCamera;
+    this.shared.tDepth.value = depth;
+    this.shared.uFocus.value = this.focusDistance;
+    this.shared.uNear.value = lens.near;
+    this.shared.uFar.value = lens.far;
+    this.shared.uStrength.value = this.strength;
+
+    this.downsampleMaterial.uniforms.tDiffuse.value = readBuffer.texture;
+    this.blit(renderer, this.downsampleMaterial, this.halfA);
+
+    // A short pixel step. Far scenery softens; it does not melt.
+    const step = 1.4 + 2.2 * this.strength;
+    const dir = this.gaussianMaterial.uniforms.uDirection.value as THREE.Vector2;
+    this.gaussianMaterial.uniforms.tInput.value = this.halfA.texture;
+    dir.set(step / this.halfA.width, 0);
+    this.blit(renderer, this.gaussianMaterial, this.halfB);
+    this.gaussianMaterial.uniforms.tInput.value = this.halfB.texture;
+    dir.set(0, step / this.halfB.height);
+    this.blit(renderer, this.gaussianMaterial, this.halfA);
+
+    this.compositeMaterial.uniforms.tSharp.value = readBuffer.texture;
+    this.compositeMaterial.uniforms.tBlur.value = this.halfA.texture;
+    this.blit(renderer, this.compositeMaterial, output);
+    this.drawOverlays(renderer, output);
+  }
+
+  private blit(
+    renderer: THREE.WebGLRenderer,
+    material: THREE.ShaderMaterial,
+    target: THREE.WebGLRenderTarget | null
+  ): void {
+    this.fsQuad.material = material;
+    renderer.setRenderTarget(target);
+    this.fsQuad.render(renderer);
+  }
+
+  /**
+   * The saw, cut ring, and lean arrow live on layer 1 for this frame so the
+   * beauty pass does not bake them into the blur. Draw them back on top,
+   * still in linear HDR, before grade and bloom.
+   */
+  private drawOverlays(
+    renderer: THREE.WebGLRenderer,
+    target: THREE.WebGLRenderTarget | null
+  ): void {
+    const prevMask = this.camera.layers.mask;
+    const prevBackground = this.scene.background;
+    const prevAutoClear = renderer.autoClear;
+    const prevShadows = renderer.shadowMap.autoUpdate;
+    this.camera.layers.set(1);
+    this.scene.background = null;
+    renderer.autoClear = false;
+    renderer.shadowMap.autoUpdate = false;
+    try {
+      renderer.setRenderTarget(target);
+      renderer.clearDepth();
+      renderer.render(this.scene, this.camera);
+    } finally {
+      this.camera.layers.mask = prevMask;
+      this.scene.background = prevBackground;
+      renderer.autoClear = prevAutoClear;
+      renderer.shadowMap.autoUpdate = prevShadows;
+    }
+  }
+
+  public override dispose(): void {
+    this.downsampleMaterial.dispose();
+    this.gaussianMaterial.dispose();
+    this.compositeMaterial.dispose();
+    this.copyMaterial.dispose();
+    this.halfA.dispose();
+    this.halfB.dispose();
+    this.fsQuad.dispose();
+  }
+}
+
 export class PostPipeline {
   private composer: EffectComposer;
   private renderPass: RenderPass;
+  private cutFocusPass: CutFocusPass;
   private atmospherePass: CanopyAtmospherePass;
   private bloomPass: UnrealBloomPass;
   private outputPass: OutputPass;
@@ -333,7 +594,15 @@ export class PostPipeline {
     });
 
     this.composer = new EffectComposer(renderer, rt);
+    // Sampled only while a trunk cut is open. Unique textures so the two
+    // ping-pong targets do not share one depth buffer.
+    this.composer.renderTarget1.depthTexture = new THREE.DepthTexture(rt.width, rt.height);
+    this.composer.renderTarget2.depthTexture = new THREE.DepthTexture(rt.width, rt.height);
+    this.composer.renderTarget1.resolveDepthBuffer = false;
+    this.composer.renderTarget2.resolveDepthBuffer = false;
+
     this.renderPass = new RenderPass(scene, camera);
+    this.cutFocusPass = new CutFocusPass(scene, camera);
     this.atmospherePass = new CanopyAtmospherePass();
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -344,6 +613,7 @@ export class PostPipeline {
     this.outputPass = new OutputPass();
 
     this.composer.addPass(this.renderPass);
+    this.composer.addPass(this.cutFocusPass);
     this.composer.addPass(this.atmospherePass);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(this.outputPass);
@@ -361,6 +631,20 @@ export class PostPipeline {
     this.bloomPass.strength = prof.bloomStrength;
     this.bloomPass.threshold = prof.bloomThreshold;
     this.bloomPass.radius = prof.bloomRadius;
+  }
+
+  /**
+   * `amount` is 0..1 and already easing. The pass shapes it again so the
+   * aperture opens gently, then resolves scene depth only while it is open.
+   */
+  public setCutFocus(amount: number, focusDistance: number): void {
+    const open = amount > 0.004;
+    const shaped = amount * amount * (3 - 2 * amount);
+    this.cutFocusPass.strength = shaped;
+    this.cutFocusPass.focusDistance = focusDistance;
+    this.cutFocusPass.enabled = open;
+    this.composer.renderTarget1.resolveDepthBuffer = open;
+    this.composer.renderTarget2.resolveDepthBuffer = open;
   }
 
   public setSize(width: number, height: number, pixelRatio: number): void {
@@ -397,6 +681,9 @@ export class PostPipeline {
   }
 
   public dispose(): void {
+    this.cutFocusPass.dispose();
+    this.composer.renderTarget1.depthTexture?.dispose();
+    this.composer.renderTarget2.depthTexture?.dispose();
     this.atmospherePass.dispose();
     this.bloomPass.dispose();
     this.composer.renderTarget1.dispose();

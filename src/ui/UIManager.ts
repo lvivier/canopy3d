@@ -8,7 +8,7 @@ import {
 } from '../data/contracts';
 import { SPECIES_LIST } from '../data/species';
 import { GameEngine } from '../gameplay/GameEngine';
-import { GameHUDState, GraphicsQuality, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
+import { GameHUDState, GraphicsQuality, SawHand, SiteId, SpeciesId, ToolId, WeatherId } from '../types';
 import { isTouchUi } from './inputHints';
 
 const TOOL_META: Record<ToolId, { name: string; key: string; icon: string; desc: string }> = {
@@ -518,6 +518,13 @@ export class UIManager {
           </div>
           <div class="hud-menu-panel" data-menu-panel="settings" role="tabpanel" hidden>
             <div class="hud-menu-setting-row">
+              <span class="hud-menu-setting-label">Saw hand</span>
+              <div class="quality-segmented" role="group" aria-label="Saw hand">
+                <button type="button" class="quality-opt" data-saw-hand="left" aria-pressed="false">Left</button>
+                <button type="button" class="quality-opt" data-saw-hand="right" aria-pressed="false">Right</button>
+              </div>
+            </div>
+            <div class="hud-menu-setting-row">
               <span class="hud-menu-setting-label">Graphics detail</span>
               <div class="quality-segmented" role="group" aria-label="Graphics Detail">
                 <button type="button" class="quality-opt" data-hud-quality="standard" aria-pressed="false">Standard</button>
@@ -665,6 +672,12 @@ export class UIManager {
       btn.addEventListener('click', () => {
         const q = btn.dataset.hudQuality as GraphicsQuality | undefined;
         if (q) this.engine.setGraphicsQuality(q);
+      });
+    });
+    hud.querySelectorAll<HTMLButtonElement>('[data-saw-hand]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const hand = btn.dataset.sawHand as SawHand | undefined;
+        if (hand) this.engine.setSawHand(hand);
       });
     });
     hud.querySelector('#btn-menu-restart')?.addEventListener('click', () => {
@@ -863,6 +876,11 @@ export class UIManager {
     }
     hud.querySelectorAll<HTMLButtonElement>('[data-hud-quality]').forEach((btn) => {
       const active = btn.dataset.hudQuality === state.graphicsQuality;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    hud.querySelectorAll<HTMLButtonElement>('[data-saw-hand]').forEach((btn) => {
+      const active = btn.dataset.sawHand === state.sawHand;
       btn.classList.toggle('active', active);
       btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });

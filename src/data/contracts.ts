@@ -70,7 +70,7 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
     briefing:
       'A fast-growing Red Alder along the creek bank is crowding the footbridge. Switch to the Chainsaw, aim the green fall corridor into the open meadow, carve a 30% face notch, then cut the back hinge cleanly.',
     tips: [
-      'Move your mouse around the tree to aim the felling guide into the green Drop Zone, then Click to lock.',
+      'Tap the ground to point the fall path into the green Drop Zone, then hold or double-tap to lock. With a mouse, move the cursor and click.',
       'Hold Left-Click on the glowing Face Notch until the bar reaches the green zone (~30%).',
       'Then hold Left-Click on the Back Cut on the opposite side until the hinge gives way!',
     ],

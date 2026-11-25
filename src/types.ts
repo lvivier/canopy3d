@@ -38,6 +38,7 @@ export type ToolId = 'prune' | 'fell' | 'wedge' | 'buck';
 export type WeatherId = 'sunny_morning' | 'misty_fog' | 'light_rain' | 'golden_hour' | 'coastal_gale';
 
 export type GraphicsQuality = 'standard' | 'high';
+export type SawHand = 'left' | 'right';
 
 export interface SpeciesSpec {
   id: SpeciesId;
@@ -327,6 +328,8 @@ export interface TreeRuntime {
   limbedCount: number;
   buckedCount: number;
   totalBuckCuts: number;
+  /** Player severed a lower buck before the tip, leaving the stem suspended. */
+  buckedOutOfOrder: boolean;
   completed: boolean;
   /** 1 = fully opaque; lerps down when this tree blocks the camera's view of the active subject */
   occlusionFade: number;
@@ -379,6 +382,8 @@ export interface GameHUDState {
   windAngle: number;
   muted: boolean;
   graphicsQuality: GraphicsQuality;
+  /** Which hand holds the ghost saw. */
+  sawHand: SawHand;
   cameraAngleDeg: number;
   /** Contract progress */
   completedContracts: Record<string, { stars: number; score: number; earnings: number }>;
