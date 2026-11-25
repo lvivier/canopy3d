@@ -3824,10 +3824,14 @@ export class GameEngine {
       this.env.waterMesh.position.y = baseWaterY + Math.sin(this.elapsed * 1.8) * 0.02;
     }
 
-    const camTarget = this.cameraCtrl.getTarget();
-    this.env?.updateBackgroundOcclusion(this.camera.position, camTarget, dt);
-    this.updatePlayableTreeOcclusion(this.camera.position, camTarget, dt);
-    this.updateSceneStructureOcclusion(this.camera.position, camTarget, dt);
+    // The job-open fly-in sweeps through crowns and buildings. Leave them solid
+    // until that pan finishes, then resume see-through fading.
+    if (!this.cameraCtrl.isIntroPlaying()) {
+      const camTarget = this.cameraCtrl.getTarget();
+      this.env?.updateBackgroundOcclusion(this.camera.position, camTarget, dt);
+      this.updatePlayableTreeOcclusion(this.camera.position, camTarget, dt);
+      this.updateSceneStructureOcclusion(this.camera.position, camTarget, dt);
+    }
     this.refreshShadows(dt);
 
     if (this.graphicsQuality === 'high' && this.postPipeline) {
