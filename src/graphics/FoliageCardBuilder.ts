@@ -10,6 +10,7 @@ export type BotanicalSprigId =
   | 'deadwood_conifer'
   // Group 1 — Coastal Conifers
   | 'western_red_cedar'
+  | 'yellow_cedar'
   | 'sitka_spruce'
   | 'western_hemlock'
   | 'california_redwood'
@@ -169,6 +170,31 @@ const SPRIG_CONFIGS: Record<BotanicalSprigId, SprigAssetConfig> = {
       drapeCountHigh: 5,
       drapePitch: 0.58,
       crossCountHigh: 5,
+    },
+  },
+  yellow_cedar: {
+    id: 'yellow_cedar',
+    anchor: 'bottom',
+    roughness: 0.72,
+    normalScale: 0.58,
+    sssStrength: 0.36,
+    flutterScale: 0.96,
+    alphaTest: 0.34,
+    twigColor: '#787166',
+    // Misty coastal blue-green & emerald sea-green weeping Nootka Cypress scale curtains
+    tintPalette: ['#e2f0e8', '#d4e8df', '#ebf4ee', '#c8e0d6', '#dcece4'],
+    coniferHabit: {
+      // Steeply drooping, melted-wax weeping foliage curtains hanging from snow-shedding limbs
+      pitchLow: 0.42,
+      pitchHigh: 0.12,
+      archLow: 0.54,
+      archHigh: 0.32,
+      twigLiftLow: -0.24,
+      twigLiftHigh: -0.06,
+      cardScale: 1.32,
+      drapeCountHigh: 7,
+      drapePitch: 0.96,
+      crossCountHigh: 6,
     },
   },
   sitka_spruce: {

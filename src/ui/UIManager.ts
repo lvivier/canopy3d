@@ -364,6 +364,7 @@ export class UIManager {
           <button class="btn btn-ghost" id="btn-sb-back">← Back</button>
         </div>
 
+        <div class="sandbox-scroll">
         ${
           ready
             ? `
@@ -413,12 +414,17 @@ export class UIManager {
         <div class="sandbox-section">
           <label>Wind speed: <strong id="sb-wind-val">${Math.round(this.sbWind * 45)} mph</strong></label>
           <input type="range" id="sb-wind-slider" min="0" max="0.8" step="0.05" value="${this.sbWind}" />
-        </div>
-
-        <div class="sandbox-actions">
-          <button class="btn btn-primary btn-lg" id="btn-launch-sandbox">Start Free Cut →</button>
         </div>`
             : `<p class="sandbox-locked-note">Work a campaign job to unlock trees and places for Free Cut.</p>`
+        }
+        </div>
+
+        ${
+          ready
+            ? `<div class="sandbox-toolbar">
+          <button class="btn btn-primary btn-lg" id="btn-launch-sandbox">Start Free Cut →</button>
+        </div>`
+            : ''
         }
       </div>
     `;

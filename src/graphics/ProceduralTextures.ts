@@ -112,6 +112,21 @@ class TextureCache {
         bctx.stroke();
       }
       ctx.globalAlpha = 1;
+    } else if (spec.barkStyle === 'yellow_cedar_flaky') {
+      // Yellow Cedar: pale ashy silver-gray shredding vertical strips over warm tan inner fissures
+      for (let i = 0; i < 160; i++) {
+        const x = rand() * size;
+        const y = rand() * size;
+        const w = 4 + rand() * 11;
+        const h = 48 + rand() * 110;
+        ctx.fillStyle = rand() > 0.3 ? '#b5b1a8' : '#969188';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = 'rgba(115, 86, 54, 0.55)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+        bctx.fillStyle = rand() > 0.35 ? '#d4d4d4' : '#585858';
+        bctx.fillRect(x, y, w, h);
+      }
     } else if (spec.barkStyle === 'scaly') {
       // Sitka Spruce: rounded overlapping purplish-gray bark scales
       for (let i = 0; i < 320; i++) {

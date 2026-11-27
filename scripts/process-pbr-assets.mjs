@@ -35,6 +35,7 @@ const CUSTOM_TILES = [
   { id: 'aspen_bark', src: 'aspen-bark.jpg', mode: 'aspen_eye', seamless: true },
   { id: 'windmill_palm_bark', src: 'windmill-palm-bark.jpg', mode: 'fissured_bark', seamless: true, brighten: 1.62 },
   { id: 'giant_sequoia_bark', src: 'giant-sequoia-bark.jpg', mode: 'fissured_bark', seamless: true },
+  { id: 'yellow_cedar_bark', src: 'yellow-cedar-bark.jpg', mode: 'fissured_bark', seamless: true },
   { id: 'sawn_end_grain', src: 'sawn-end-grain.jpg', mode: 'end_grain', seamless: false },
 ];
 

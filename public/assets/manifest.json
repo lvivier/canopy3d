@@ -119,6 +119,13 @@
       "arm": "assets/textures/giant_sequoia_bark/arm.webp",
       "source": "Generated + Delighted PBR Extractor"
     },
+    "yellow_cedar_bark": {
+      "diff": "assets/textures/yellow_cedar_bark/diff.webp",
+      "diff1k": "assets/textures/yellow_cedar_bark/diff_1k.webp",
+      "nor": "assets/textures/yellow_cedar_bark/nor.webp",
+      "arm": "assets/textures/yellow_cedar_bark/arm.webp",
+      "source": "Generated + Delighted PBR Extractor"
+    },
     "sawn_end_grain": {
       "diff": "assets/textures/sawn_end_grain/diff.webp",
       "diff1k": "assets/textures/sawn_end_grain/diff_1k.webp",

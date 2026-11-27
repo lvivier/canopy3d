@@ -47,6 +47,30 @@ export const PNW_SPECIES: Record<SpeciesId, SpeciesSpec> = {
     crownShape: 'sweeping_cone',
   },
 
+  yellow_cedar: {
+    id: 'yellow_cedar',
+    name: 'Yellow Cedar',
+    latinName: 'Callitropsis nootkatensis',
+    category: 'conifer',
+    description:
+      'Ancient coastal BC and Pacific Northwest conifer of misty ocean bluffs and wet subalpine slopes, famed for pale ashy-gray shredding bark, steeply weeping blue-green foliage curtains, and vivid golden-yellow heartwood.',
+    arboristTip:
+      'Fine-grained bright yellow timber is denser and tougher to saw than Western Red Cedar—balance wind-whipped bluff leans carefully and use wedges to clear coastal gusts.',
+    barkPrimary: '#9d988e',
+    barkSecondary: '#7d6245',
+    barkStyle: 'yellow_cedar_flaky',
+    heartwoodColor: '#e8cc5e',
+    sapwoodColor: '#f7ecc4',
+    foliageColors: ['#2d5c48', '#3c6f56', '#214738', '#4c7e66'],
+    woodDensity: 1.06,
+    timberValuePerMeter: 86,
+    heightRange: [18, 28],
+    radiusRatio: 0.032,
+    buttressFlare: 1.48,
+    droopingLeader: true,
+    crownShape: 'weeping_cedar_spire',
+  },
+
   sitka_spruce: {
     id: 'sitka_spruce',
     name: 'Sitka Spruce',

@@ -14,6 +14,7 @@ export type PbrTextureId =
   | 'aspen_bark'
   | 'windmill_palm_bark'
   | 'giant_sequoia_bark'
+  | 'yellow_cedar_bark'
   | 'sawn_end_grain'
   | 'leaves_forest_ground'
   | 'grass_path_3'
@@ -62,6 +63,16 @@ export const SPECIES_BARK_PROFILES: Record<SpeciesId, SpeciesBarkProfile> = {
     metersPerTileV: 2.0,
     mossAffinity: 0.48,
     wetSheen: 0.55,
+  },
+  yellow_cedar: {
+    textureId: 'yellow_cedar_bark',
+    tint: '#f2efe8',
+    normalScale: 1.38,
+    roughness: 0.93,
+    aoIntensity: 0.72,
+    metersPerTileV: 1.85,
+    mossAffinity: 0.52,
+    wetSheen: 0.5,
   },
   sitka_spruce: {
     textureId: 'sitka_spruce_bark',

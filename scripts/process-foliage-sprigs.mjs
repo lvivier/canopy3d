@@ -25,6 +25,7 @@ const SPRIGS = [
   { id: 'deadwood_conifer', src: 'sprig-deadwood-conifer.jpg', key: 'cyan', normalStrength: 1.9 },
   // Group 1 — Coastal Conifers
   { id: 'western_red_cedar', src: 'sprig-western-red-cedar.jpg', key: 'magenta', normalStrength: 1.55 },
+  { id: 'yellow_cedar', src: 'sprig-yellow-cedar.jpg', key: 'magenta', normalStrength: 1.55 },
   { id: 'sitka_spruce', src: 'sprig-sitka-spruce.jpg', key: 'magenta', normalStrength: 1.85 },
   { id: 'western_hemlock', src: 'sprig-western-hemlock.jpg', key: 'magenta', normalStrength: 1.5 },
   { id: 'california_redwood', src: 'sprig-california-redwood.jpg', key: 'magenta', normalStrength: 1.75 },

@@ -852,6 +852,7 @@ export function buildTreeRuntime(
   const isSmokeTree = spec.species === 'smoke_tree';
   const isWindmillPalm = spec.species === 'windmill_palm';
   const isGiantSequoia = spec.species === 'giant_sequoia';
+  const isYellowCedar = spec.species === 'yellow_cedar';
   const isSculpturalHardwood = isArbutus || isGarryOak;
   const rand = makeRng(spec.seed);
   const barkProfile = SPECIES_BARK_PROFILES[spec.species];
@@ -1607,7 +1608,9 @@ export function buildTreeRuntime(
                         ? 4.6
                         : spec.species === 'ponderosa_pine' || spec.species === 'western_white_pine'
                           ? 3.5
-                          : 3.2;
+                          : spec.species === 'yellow_cedar'
+                            ? 2.65
+                            : 3.2;
     const bLength = isWindmillPalm
       ? (isTarget ? 1.62 + rand() * 0.26 : 1.78 + rand() * 0.26) * Math.max(0.84, spec.height / 9.2)
       : widthSpread *
@@ -1647,6 +1650,7 @@ export function buildTreeRuntime(
     // Pitch based on species
     let pitch = 0.05;
     if (spec.species === 'western_red_cedar') pitch = -0.18;
+    else if (spec.species === 'yellow_cedar') pitch = -0.34 - rand() * 0.14;
     else if (spec.species === 'western_hemlock') pitch = -0.14;
     else if (spec.species === 'sitka_spruce') pitch = -0.05;
     else if (spec.species === 'bigleaf_maple') pitch = 0.32 + rand() * 0.22;
@@ -1928,8 +1932,10 @@ export function buildTreeRuntime(
       const seg2Pitch =
         spec.species === 'western_red_cedar'
           ? pitch + 0.34
-          : spec.species === 'giant_sequoia'
-            ? pitch + 0.32
+          : spec.species === 'yellow_cedar'
+            ? pitch - 0.24
+            : spec.species === 'giant_sequoia'
+              ? pitch + 0.32
             : spec.species === 'douglas_fir'
               ? pitch + 0.22
             : spec.species === 'weeping_willow'
@@ -2084,7 +2090,7 @@ export function buildTreeRuntime(
 
   if (speciesSpec.category === 'conifer') {
     const tiers = isGiantSequoia ? Math.floor(spec.height * 0.56) : Math.floor(spec.height * 0.65);
-    const startFrac = isGiantSequoia ? 0.45 : 0.52;
+    const startFrac = isGiantSequoia ? 0.45 : isYellowCedar ? 0.42 : 0.52;
     const crownStartY = upperHeight * startFrac;
     const crownZoneSpan = Math.max(0.1, groundLimbCutoffY - crownStartY);
     // Group all crown foliage overlapping the sawlog bucking zone into 4 cohesive
@@ -2114,7 +2120,12 @@ export function buildTreeRuntime(
       const heightFracForFol = THREE.MathUtils.lerp(0.32, 0.96, crownT);
       const y = upperHeight * f;
       const center = getTrunkCenterAt(y);
-      const crownWidth = spec.species === 'california_redwood' ? 0.205 : 0.24;
+      const crownWidth =
+        spec.species === 'california_redwood'
+          ? 0.205
+          : spec.species === 'yellow_cedar'
+            ? 0.168
+            : 0.24;
       const crownRadius = isGiantSequoia
         ? spec.height * 0.172 * (0.58 + 0.46 * Math.sin(crownT * Math.PI * 0.86 + 0.16)) + 1.15
         : (1 - (f - 0.15) / 0.88) * (spec.height * crownWidth) + 0.55;
@@ -2128,7 +2139,9 @@ export function buildTreeRuntime(
             ? reach * THREE.MathUtils.lerp(0.06, 0.32, crownT)
             : spec.species === 'western_red_cedar'
               ? reach * THREE.MathUtils.lerp(-0.18, 0.14, crownT)
-              : spec.species === 'western_hemlock'
+              : spec.species === 'yellow_cedar'
+                ? reach * THREE.MathUtils.lerp(-0.38, -0.1, crownT)
+                : spec.species === 'western_hemlock'
                 ? reach * THREE.MathUtils.lerp(-0.22, -0.02, crownT)
                 : spec.species === 'california_redwood'
                   ? reach * THREE.MathUtils.lerp(-0.08, 0.16, crownT)

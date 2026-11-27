@@ -3,6 +3,7 @@ import * as THREE from 'three';
 export type SpeciesId =
   | 'douglas_fir'
   | 'western_red_cedar'
+  | 'yellow_cedar'
   | 'sitka_spruce'
   | 'bigleaf_maple'
   | 'red_alder'
@@ -54,6 +55,7 @@ export interface SpeciesSpec {
   barkStyle:
     | 'furrowed'
     | 'fibrous'
+    | 'yellow_cedar_flaky'
     | 'scaly'
     | 'mossy'
     | 'smooth_lichen'
@@ -90,6 +92,7 @@ export interface SpeciesSpec {
   crownShape:
     | 'spire'
     | 'sweeping_cone'
+    | 'weeping_cedar_spire'
     | 'tiered_spruce'
     | 'broad_dome'
     | 'oval_upright'

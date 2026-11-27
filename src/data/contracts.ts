@@ -1135,6 +1135,77 @@ const CAMPAIGN_CONTRACTS_UNSORTED: ContractSpec[] = [
       },
     ],
   },
+
+  {
+    id: 'c19-nootka-bluff',
+    index: 19,
+    title: 'Nootka Bluff Yellow Cedars',
+    subtitle: 'Storm-Damaged Bluff · Coastal Rain & Specialty Timber',
+    site: 'storm_bluff',
+    weather: 'light_rain',
+    difficulty: 3,
+    windSpeed: 0.36,
+    windAngle: -2.2,
+    unlockedTools: ['prune', 'fell', 'wedge', 'buck'],
+    briefing:
+      'Steady coastal rain sweeps a misty Pacific bluff crowned with ancient Yellow Cedars (Callitropsis nootkatensis). Rebalance and wedge the wind-leaning 24.5m bluff cedar away from the Nootka Overlook Gazebo down Inlet Bluff Lane, drop the ridge cedar onto the West Bluff Bench, and preserve the overlook sentinel cedar by trimming only its 3 storm-cracked drooping boughs.',
+    tips: [
+      'Yellow Cedar heartwood is bright golden-yellow, dense, and high-value—it cuts slower than Western Red Cedar, so take steady control of your notch and hinge!',
+      'Use Felling Wedges on the 24.5m bluff cedar to lift it past the coastal wind lean toward the gazebo, and leave the south overlook sentinel standing.',
+    ],
+    basePayout: 1680,
+    hazards: [
+      { id: 'h-gazebo', label: 'Nootka Overlook Gazebo', type: 'gazebo', x: -11.5, z: 2.5, radius: 4.5, width: 6, depth: 6 },
+      { id: 'h-cabin', label: 'Bluff Watch Cabin', type: 'cabin', x: 11.5, z: -12.5, radius: 5.4, width: 8.5, depth: 6.5, rotation: -0.25 },
+      { id: 'h-sap1', label: 'Protected Yellow Cedar Sapling', type: 'sapling', species: 'yellow_cedar', x: 1.5, z: 11.5, radius: 2.4 },
+      { id: 'h-fence', label: 'Cliff Rail', type: 'fence', x: 14.0, z: 14.5, radius: 2.4, width: 9, depth: 1.2, rotation: 0.75 },
+    ],
+    trees: [
+      {
+        id: 't19-ycedar-bluff',
+        species: 'yellow_cedar',
+        x: -4.5,
+        z: -2.0,
+        height: 24.5,
+        leanAngle: -2.35,
+        leanStrength: 0.42,
+        task: 'prune_and_fell',
+        hazardBranches: 4,
+        hazardBranchAngle: -2.35,
+        dropZone: { x: 6.4, z: 3.7, angle: 0.48, length: 25.5, width: 5.8, label: 'Inlet Bluff Lane' },
+        requireBucking: true,
+        seed: 1901,
+      },
+      {
+        id: 't19-ycedar-ridge',
+        species: 'yellow_cedar',
+        x: 3.0,
+        z: -9.0,
+        height: 21.5,
+        leanAngle: -0.9,
+        leanStrength: 0.32,
+        task: 'prune_and_fell',
+        hazardBranches: 3,
+        hazardBranchAngle: -0.9,
+        dropZone: { x: -7.6, z: -7.1, angle: 2.96, length: 22.5, width: 5.6, label: 'West Bluff Bench' },
+        requireBucking: true,
+        seed: 1902,
+      },
+      {
+        id: 't19-ycedar-overlook',
+        species: 'yellow_cedar',
+        x: -6.5,
+        z: 9.5,
+        height: 19.0,
+        leanAngle: 1.2,
+        leanStrength: 0.18,
+        task: 'prune_only',
+        hazardBranches: 3,
+        hazardBranchAngle: 1.2,
+        seed: 1903,
+      },
+    ],
+  },
 ];
 
 /** Campaign order: ascending difficulty, then base payout. `index` is renumbered 1–N. */
@@ -1274,6 +1345,7 @@ export function getSandboxEnvForSpecies(species: SpeciesId): {
   const defaults: Record<SpeciesId, { site: SiteId; weather: WeatherId; windSpeed: number }> = {
     douglas_fir: { site: 'timber_ridge', weather: 'golden_hour', windSpeed: 0.22 },
     western_red_cedar: { site: 'coastal_homestead', weather: 'golden_hour', windSpeed: 0.18 },
+    yellow_cedar: { site: 'storm_bluff', weather: 'misty_fog', windSpeed: 0.34 },
     sitka_spruce: { site: 'coastal_homestead', weather: 'sunny_morning', windSpeed: 0.08 },
     bigleaf_maple: { site: 'misty_creek', weather: 'sunny_morning', windSpeed: 0.14 },
     red_alder: { site: 'misty_creek', weather: 'misty_fog', windSpeed: 0.12 },
@@ -1311,6 +1383,7 @@ export function createSandboxContract(opts: {
   const heightBySpecies: Record<SpeciesId, number> = {
     douglas_fir: 26,
     western_red_cedar: 22,
+    yellow_cedar: 23.5,
     sitka_spruce: 23,
     bigleaf_maple: 18,
     red_alder: 16,
@@ -1335,6 +1408,39 @@ export function createSandboxContract(opts: {
     windmill_palm: 9.2,
   };
   const h = heightBySpecies[opts.species];
+  const treeCount = 1 + Math.floor(Math.random() * 3);
+  const treeSlots = [
+    { x: 0, z: 0 },
+    { x: -3.8, z: -1.8 },
+    { x: 4.2, z: 1.2 },
+  ];
+  const trees = Array.from({ length: treeCount }, (_, i) => {
+    const { x, z } = treeSlots[i]!;
+    const leanAngle = -2.2 + (Math.random() - 0.5) * 1.2;
+    const treeSeed = seed + i * 137;
+    return {
+      id: `sb-tree-${i + 1}`,
+      species: opts.species,
+      x,
+      z,
+      height: h,
+      leanAngle,
+      leanStrength: 0.28 + opts.windSpeed * 0.2 + (Math.random() - 0.5) * 0.08,
+      task: 'prune_and_fell' as const,
+      hazardBranches: 4,
+      hazardBranchAngle: leanAngle,
+      dropZone: {
+        x: x + h * 0.45,
+        z: z + 2.0,
+        angle: 0.2 + (Math.random() - 0.5) * 0.5,
+        length: Math.max(10, h + 1.5),
+        width: 6.0,
+        label: treeCount > 1 ? `Drop Zone ${i + 1}` : 'Target Drop Zone',
+      },
+      requireBucking: h >= 10,
+      seed: treeSeed,
+    };
+  });
   const isTown = opts.site === 'coastal_town';
   const isHeadland = opts.site === 'pacific_headland';
   const isKootenay = opts.site === 'kootenay_rockies';
@@ -1376,22 +1482,6 @@ export function createSandboxContract(opts: {
             { id: 'sb-shed', label: 'Woodshed', type: 'shed', x: -11.5, z: -7.5, radius: 3.5, width: 4.6, depth: 3.6, rotation: 0.2 },
             { id: 'sb-sap', label: 'Protected Sapling', type: 'sapling', species: 'western_red_cedar', x: -6.5, z: 11.0, radius: 2.4 },
           ],
-    trees: [
-      {
-        id: 'sb-tree-1',
-        species: opts.species,
-        x: 0,
-        z: 0,
-        height: h,
-        leanAngle: -2.2,
-        leanStrength: 0.28 + opts.windSpeed * 0.2,
-        task: 'prune_and_fell',
-        hazardBranches: 4,
-        hazardBranchAngle: -2.2,
-        dropZone: { x: h * 0.45, z: 2.0, angle: 0.2, length: Math.max(10, h + 1.5), width: 6.0, label: 'Target Drop Zone' },
-        requireBucking: h >= 10,
-        seed,
-      },
-    ],
+    trees,
   };
 }

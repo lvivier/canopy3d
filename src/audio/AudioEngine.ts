@@ -1088,6 +1088,7 @@ export class AudioEngine {
     // soft poplars/alders pop higher & brisker; cedar/redwood/eucalyptus tear in long stringy fibers.
     const isStringy =
       id === 'western_red_cedar' ||
+      id === 'yellow_cedar' ||
       id === 'california_redwood' ||
       id === 'giant_sequoia' ||
       id === 'eucalyptus' ||
